@@ -154,7 +154,7 @@ check_dependencies() {
     echo ""
 
     if [[ "$all_ok" == false ]]; then
-        print_error "Some dependencies are missing. Please run install.sh first."
+        print_error "Some dependencies are missing. Please run ./check-deps.sh to see installation instructions."
         exit 1
     fi
 }

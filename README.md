@@ -392,6 +392,70 @@ cat ~/.flowgate/logs/watcher.log
 cat ~/.flowgate/logs/tasks/owner-repo-123.log
 ```
 
+## アンインストール
+
+flowgateを完全に削除する場合:
+
+```bash
+./uninstall.sh
+```
+
+アンインストーラーは以下を実行します:
+
+```
+flowgate uninstaller
+=====================
+
+1. systemd サービスの削除
+-------------------------
+→ Stopping and disabling flowgate.timer...
+  [✓] Stopped flowgate.timer
+  [✓] Disabled flowgate.timer
+
+→ Removing systemd unit files...
+  [✓] Removed flowgate.timer
+  [✓] Removed flowgate.service
+  [✓] systemd daemon reloaded
+
+2. スクリプトの削除
+-------------------
+→ Removing flowgate scripts from ~/.local/bin...
+  [✓] Removed flowgate
+  [✓] Removed flowgate-watcher
+
+3. pueue グループの削除
+-----------------------
+→ Checking for flowgate group...
+  [✓] Removed pueue group 'flowgate'
+
+4. データディレクトリの削除
+---------------------------
+[!] This will permanently delete:
+  - Configuration: ~/.flowgate/config.toml
+  - Repository list: ~/.flowgate/repos.meta
+  - Logs: ~/.flowgate/logs/
+  - Cloned repositories: ~/.flowgate/repos/
+
+Delete ~/.flowgate? [y/N]: y
+  [✓] Removed ~/.flowgate
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Uninstallation complete!
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+### オプション
+
+```bash
+# 確認なしで完全削除
+./uninstall.sh -y
+
+# ヘルプを表示
+./uninstall.sh --help
+```
+
+> **Note**: データディレクトリ (`~/.flowgate`) の削除は確認が入ります。保持したい場合は `N` を選択してください。
+
 ## 貢献方法
 
 1. このリポジトリをフォーク

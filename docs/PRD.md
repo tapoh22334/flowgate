@@ -317,10 +317,26 @@ flowgate owner/repo 123
 - claude-flow (npm)
 - claude code (npm)
 
+## アンインストール
+
+```bash
+./uninstall.sh
+```
+
+以下を自動削除:
+1. systemdサービスの停止と削除
+2. ~/.local/bin/ のスクリプト削除
+3. pueueグループの削除
+4. ~/.flowgate/ ディレクトリの削除（確認あり）
+
+オプション:
+- `./uninstall.sh -y` - 確認なしで完全削除
+- `./uninstall.sh --help` - ヘルプ表示
+
 ## 制約・注意
 
 - 初回は手動で認証が必要
-- Claude認証トークンの有効期限切れ時は `./init.sh --reauth`
+- Claude認証トークンの有効期限切れ時は `./install.sh --reauth`
 - pueuedが起動している必要あり
 
 ## オブザーバビリティ

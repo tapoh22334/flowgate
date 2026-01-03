@@ -61,25 +61,32 @@ flowgateは、GitHub Issueにラベルを付けるだけで、[claude-flow](http
 
 ## クイックスタート
 
-### 前提条件
+### 必須依存関係
 
-- Node.js 20+
-- git
-- GitHub CLI (gh)
-- pueue / pueued
+flowgate を使用する前に、以下の依存関係を事前にインストールしてください：
 
-### インストール
+#### 基本ツール
+- **git** - バージョン管理
+- **Node.js 20+** - JavaScript ランタイム
+- **GitHub CLI (gh)** - GitHub操作 ([インストール方法](https://cli.github.com/))
+- **pueue / pueued** - タスクキュー管理 ([インストール方法](https://github.com/Nukesor/pueue))
+
+#### Claude関連ツール (npm経由)
+```bash
+npm install -g @anthropic-ai/claude-flow@alpha
+npm install -g @anthropic-ai/claude-code
+```
+
+### 依存関係の確認
+
+すべての依存関係が揃っているか確認：
 
 ```bash
 git clone https://github.com/takoh/flowgate && cd flowgate
-./install.sh
+./check-deps.sh
 ```
 
-`install.sh` は以下の依存をインストールします：
-- gh CLI
-- pueue / pueued
-- claude-flow (npm)
-- claude code (npm)
+依存関係が不足している場合、`check-deps.sh` がインストール方法を表示します。
 
 ### 初期設定
 
@@ -242,7 +249,7 @@ another/project
 
 ```
 flowgate/                         # インストール先
-├── install.sh
+├── check-deps.sh
 ├── init.sh
 ├── scripts/
 │   ├── flowgate.sh               # CLI

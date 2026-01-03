@@ -73,7 +73,7 @@ flowgate status
 
 ```
 flowgate/                         # インストール先
-├── install.sh
+├── check-deps.sh
 ├── init.sh
 ├── scripts/
 │   ├── flowgate.sh               # CLI
@@ -142,13 +142,15 @@ flowgate repo list                # 一覧表示
 
 ```bash
 git clone https://github.com/takoh/flowgate && cd flowgate
-./install.sh
+./check-deps.sh  # 依存関係の確認
 ./init.sh
 ```
 
-### install.sh
+### check-deps.sh
 
-依存をインストール:
+依存関係をチェックし、不足している場合はインストール方法を表示:
+- git
+- Node.js 20+
 - gh CLI
 - pueue / pueued
 - claude-flow (npm)

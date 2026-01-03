@@ -103,14 +103,12 @@ flowgate/                         # インストール先
 ### ~/.flowgate/config.toml
 
 ```toml
-[general]
-mode = "swarm"          # デフォルトモード: swarm | hive
-poll_interval = 60      # ポーリング間隔(秒)
-
-[pueue]
-parallel = 1            # 並行実行数
+# flowgate configuration
+mode = "swarm"          # デフォルト実行モード: swarm | hive
 group = "flowgate"      # pueueグループ名
 ```
+
+**ポーリング間隔の変更**: systemd timerを直接編集（`~/.config/systemd/user/flowgate.timer`）
 
 ### ~/.flowgate/repos.meta
 
@@ -359,18 +357,3 @@ flowgate:hive   ─┘                        ├─▶ flowgate:failed
 
 ## 設定
 
-### ~/.flowgate/config.toml (フル版)
-
-```toml
-[general]
-mode = "swarm"          # デフォルトモード: swarm | hive
-poll_interval = 60      # ポーリング間隔(秒)
-timeout = 21600         # タイムアウト(秒) = 6時間
-
-[pueue]
-parallel = 1            # 並行実行数
-group = "flowgate"      # pueueグループ名
-
-[logs]
-retention_days = 30     # ログ保持日数
-```

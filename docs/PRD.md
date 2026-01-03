@@ -142,51 +142,69 @@ flowgate repo list                # 一覧表示
 
 ```bash
 git clone https://github.com/takoh/flowgate && cd flowgate
-./check-deps.sh  # 依存関係の確認
-./init.sh
+./install.sh  # ワンコマンドで完全セットアップ
 ```
 
-### check-deps.sh
+### install.sh
 
-依存関係をチェックし、不足している場合はインストール方法を表示:
-- git
-- Node.js 20+
-- gh CLI
-- pueue / pueued
-- claude-flow (npm)
-- claude code (npm)
-
-### init.sh
+統合インストーラーが以下を自動実行:
+1. 依存関係のチェック (git, Node.js 20+, gh CLI, pueue, claude-flow, claude-code)
+2. GitHub/Claude認証
+3. pueuedの起動とグループ作成
+4. ディレクトリ構造の作成
+5. スクリプトのインストール (~/.local/bin/)
+6. systemdサービスのインストールと有効化
 
 ```
-$ ./init.sh
+$ ./install.sh
 
-flowgate setup
-==============
-[✓] Dependencies installed
-[ ] GitHub authenticated
-[ ] Claude authenticated
+flowgate installer
+==================
 
-→ Starting GitHub auth...
-  Open: https://github.com/login/device
-  Enter code: XXXX-XXXX
-  Waiting... [✓]
+1. 依存関係のチェック
+---------------------
+  [✓] git 2.x
+  [✓] Node.js v20.x
+  [✓] gh CLI 2.x
+  [✓] pueue 3.x
+  [✓] claude-flow
+  [✓] claude-code
 
-→ Starting Claude auth...
-  Open: https://claude.ai/oauth/...
-  Waiting... [✓]
+2. 認証
+-------
+→ GitHub authentication...
+  [✓] Already authenticated
 
+→ Claude authentication...
+  [✓] Claude authenticated
+
+3. pueue セットアップ
+---------------------
 → Starting pueued...
-  [✓] pueued running
+  [✓] pueued started
 
-→ Creating flowgate group in pueue...
+→ Creating pueue group 'flowgate'...
   [✓] Group 'flowgate' created
 
-Setup complete!
+4. ディレクトリ構造の作成
+-------------------------
+  [✓] Created ~/.flowgate
+
+5. スクリプトのインストール
+---------------------------
+  [✓] Installed flowgate
+  [✓] Installed flowgate-watcher
+
+6. systemd サービスのインストール
+---------------------------------
+  [✓] flowgate.timer enabled and started
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Installation complete!
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Next steps:
   flowgate repo add owner/repo
-  systemctl --user enable --now flowgate.timer
 ```
 
 ## リポジトリ追加
@@ -203,19 +221,25 @@ Ready! Add 'flowgate' label to any issue in takoh/my-project.
 
 ## 起動
 
-```bash
-# systemd timerで常駐
-systemctl --user enable --now flowgate.timer
+インストール時に自動的に有効化されます。手動で操作する場合:
 
+```bash
 # 状態確認
 systemctl --user status flowgate.timer
 systemctl --user list-timers
 
+# 手動で有効化（必要な場合のみ）
+systemctl --user enable --now flowgate.timer
+
+# 停止
+systemctl --user stop flowgate.timer
+
 # ログ確認
 journalctl --user -u flowgate -f
+tail -f ~/.flowgate/logs/watcher.log
 
 # 手動実行（デバッグ用）
-./scripts/flowgate-watcher.sh
+flowgate-watcher
 ```
 
 ## 動作フロー詳細
@@ -293,10 +317,23 @@ flowgate owner/repo 123
 - claude-flow (npm)
 - claude code (npm)
 
+## アンインストール
+
+```bash
+./uninstall.sh     # 対話的に削除
+./uninstall.sh -y  # 確認なしで完全削除
+```
+
+以下を自動削除:
+1. systemdサービスの停止と削除
+2. ~/.local/bin/ のスクリプト削除
+3. pueueグループの削除
+4. ~/.flowgate/ ディレクトリの削除（確認あり）
+
 ## 制約・注意
 
 - 初回は手動で認証が必要
-- Claude認証トークンの有効期限切れ時は `./init.sh --reauth`
+- Claude認証トークンの有効期限切れ時は `./install.sh --reauth`
 - pueuedが起動している必要あり
 
 ## オブザーバビリティ

@@ -702,39 +702,6 @@ print_completion() {
 }
 
 #=============================================================================
-# ヘルプ表示
-#=============================================================================
-
-show_help() {
-    cat << EOF
-Usage: install.sh [OPTIONS]
-
-flowgate 統合インストーラー
-
-OPTIONS:
-  --reauth    認証を再実行する
-  -h, --help  このヘルプを表示
-
-DESCRIPTION:
-  flowgateの完全なセットアップを行います：
-  1. 依存関係のチェック
-  2. GitHub/Claude認証
-  3. pueuedの起動とグループ作成
-  4. ディレクトリ構造の作成
-  5. スクリプトのインストール (~/.local/bin/)
-  6. systemdサービスのインストールと有効化
-
-EXAMPLES:
-  # 通常のインストール
-  ./install.sh
-
-  # 認証を再実行
-  ./install.sh --reauth
-
-EOF
-}
-
-#=============================================================================
 # メイン処理
 #=============================================================================
 
@@ -748,13 +715,9 @@ main() {
                 REAUTH=true
                 shift
                 ;;
-            -h|--help)
-                show_help
-                exit 0
-                ;;
             *)
                 print_error "Unknown option: $1"
-                show_help
+                echo "Usage: ./install.sh [--reauth]"
                 exit 1
                 ;;
         esac

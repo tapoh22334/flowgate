@@ -320,7 +320,8 @@ flowgate owner/repo 123
 ## アンインストール
 
 ```bash
-./uninstall.sh
+./uninstall.sh     # 対話的に削除
+./uninstall.sh -y  # 確認なしで完全削除
 ```
 
 以下を自動削除:
@@ -328,10 +329,6 @@ flowgate owner/repo 123
 2. ~/.local/bin/ のスクリプト削除
 3. pueueグループの削除
 4. ~/.flowgate/ ディレクトリの削除（確認あり）
-
-オプション:
-- `./uninstall.sh -y` - 確認なしで完全削除
-- `./uninstall.sh --help` - ヘルプ表示
 
 ## 制約・注意
 

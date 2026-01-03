@@ -449,9 +449,6 @@ Delete ~/.flowgate? [y/N]: y
 ```bash
 # 確認なしで完全削除
 ./uninstall.sh -y
-
-# ヘルプを表示
-./uninstall.sh --help
 ```
 
 > **Note**: データディレクトリ (`~/.flowgate`) の削除は確認が入ります。保持したい場合は `N` を選択してください。

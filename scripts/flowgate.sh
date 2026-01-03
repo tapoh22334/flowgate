@@ -1,313 +1,486 @@
 #!/usr/bin/env bash
-#
-# flowgate - Bridge GitHub Issues to claude-flow task execution
-#
-# Usage:
-#   flowgate <issue-number>           Run with default mode
-#   flowgate -m <mode> <issue-number> Run with specified mode (swarm/hive)
-#   flowgate status                   Show pueue status
-#
-
 set -euo pipefail
 
-# ==============================================================================
-# Constants
-# ==============================================================================
-readonly REPO_DIR="/repos/repo"
-readonly WORKTREES_DIR="${REPO_DIR}/.worktrees"
+# =============================================================================
+# flowgate - Bridge GitHub Issues to claude-flow task execution via pueue
+# =============================================================================
 
-# ==============================================================================
+# -----------------------------------------------------------------------------
+# Constants
+# -----------------------------------------------------------------------------
+readonly FLOWGATE_DIR="${HOME}/.flowgate"
+readonly REPOS_META="${FLOWGATE_DIR}/repos.meta"
+readonly CONFIG_FILE="${FLOWGATE_DIR}/config.toml"
+readonly REPOS_DIR="${FLOWGATE_DIR}/repos"
+readonly LOGS_DIR="${FLOWGATE_DIR}/logs"
+readonly TASKS_LOG_DIR="${LOGS_DIR}/tasks"
+
+readonly VERSION="0.1.0"
+
+# -----------------------------------------------------------------------------
 # Colors
-# ==============================================================================
+# -----------------------------------------------------------------------------
 readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[0;33m'
 readonly BLUE='\033[0;34m'
 readonly CYAN='\033[0;36m'
+readonly BOLD='\033[1m'
 readonly NC='\033[0m' # No Color
 
-# ==============================================================================
-# Logging functions
-# ==============================================================================
-log_info() {
+# -----------------------------------------------------------------------------
+# Utility Functions
+# -----------------------------------------------------------------------------
+info() {
     echo -e "${BLUE}[INFO]${NC} $*"
 }
 
-log_success() {
+success() {
     echo -e "${GREEN}[OK]${NC} $*"
 }
 
-log_warn() {
+warn() {
     echo -e "${YELLOW}[WARN]${NC} $*"
 }
 
-log_error() {
+error() {
     echo -e "${RED}[ERROR]${NC} $*" >&2
 }
 
-# ==============================================================================
-# Usage
-# ==============================================================================
-usage() {
-    cat <<EOF
-Usage: flowgate [OPTIONS] <issue-number>
-       flowgate status
+die() {
+    error "$@"
+    exit 1
+}
 
-Bridge GitHub Issues to claude-flow task execution.
+# -----------------------------------------------------------------------------
+# Config Functions
+# -----------------------------------------------------------------------------
+get_config() {
+    local key="$1"
+    local default="${2:-}"
 
-Arguments:
-  issue-number    GitHub issue number to process
-  status          Show pueue queue status
+    if [[ -f "$CONFIG_FILE" ]]; then
+        # Simple TOML parsing for key = "value" or key = value
+        local value
+        value=$(grep -E "^${key}\s*=" "$CONFIG_FILE" 2>/dev/null | head -1 | sed 's/.*=\s*"\?\([^"]*\)"\?.*/\1/' || true)
+        if [[ -n "$value" ]]; then
+            echo "$value"
+            return
+        fi
+    fi
+    echo "$default"
+}
 
-Options:
-  -m, --mode MODE  Execution mode: swarm or hive (default: \$FLOWGATE_MODE or swarm)
-  -h, --help       Show this help message
+get_default_mode() {
+    get_config "mode" "swarm"
+}
 
-Environment:
-  GITHUB_REPO      Target repository (e.g., owner/repo) [required]
-  FLOWGATE_MODE    Default execution mode (swarm/hive) [default: swarm]
+get_pueue_group() {
+    get_config "group" "flowgate"
+}
 
-Examples:
-  flowgate 123              Process issue #123 with default mode
-  flowgate -m hive 123      Process issue #123 with hive-mind mode
-  flowgate status           Show current queue status
+# -----------------------------------------------------------------------------
+# Initialization
+# -----------------------------------------------------------------------------
+ensure_dirs() {
+    mkdir -p "$FLOWGATE_DIR"
+    mkdir -p "$REPOS_DIR"
+    mkdir -p "$LOGS_DIR"
+    mkdir -p "$TASKS_LOG_DIR"
+    touch "$REPOS_META"
+}
+
+check_dependencies() {
+    local missing=()
+
+    command -v gh >/dev/null 2>&1 || missing+=("gh")
+    command -v pueue >/dev/null 2>&1 || missing+=("pueue")
+    command -v git >/dev/null 2>&1 || missing+=("git")
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        die "Missing dependencies: ${missing[*]}"
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Help
+# -----------------------------------------------------------------------------
+show_help() {
+    cat << EOF
+${BOLD}flowgate${NC} - Bridge GitHub Issues to claude-flow task execution
+
+${BOLD}USAGE:${NC}
+    flowgate <owner/repo> [OPTIONS] <issue-number>
+    flowgate status
+    flowgate repo <subcommand>
+
+${BOLD}COMMANDS:${NC}
+    ${CYAN}<owner/repo> <issue-number>${NC}
+        Queue an issue for processing
+
+    ${CYAN}status${NC}
+        Show pueue queue status
+
+    ${CYAN}repo add <owner/repo>${NC}
+        Add repository to watch list and clone it
+
+    ${CYAN}repo remove <owner/repo>${NC}
+        Remove repository from watch list
+
+    ${CYAN}repo list${NC}
+        List watched repositories
+
+${BOLD}OPTIONS:${NC}
+    ${CYAN}-m, --mode <mode>${NC}
+        Execution mode: swarm | hive (default: ${YELLOW}$(get_default_mode)${NC})
+
+    ${CYAN}-h, --help${NC}
+        Show this help message
+
+    ${CYAN}-v, --version${NC}
+        Show version
+
+${BOLD}EXAMPLES:${NC}
+    ${GREEN}# Add a repository to watch${NC}
+    flowgate repo add owner/my-project
+
+    ${GREEN}# Queue an issue with default mode${NC}
+    flowgate owner/my-project 123
+
+    ${GREEN}# Queue an issue with hive-mind mode${NC}
+    flowgate owner/my-project -m hive 123
+
+    ${GREEN}# Check queue status${NC}
+    flowgate status
+
+${BOLD}CONFIGURATION:${NC}
+    Config file: ${YELLOW}~/.flowgate/config.toml${NC}
+    Repos file:  ${YELLOW}~/.flowgate/repos.meta${NC}
+    Repos dir:   ${YELLOW}~/.flowgate/repos/${NC}
+
 EOF
 }
 
-# ==============================================================================
-# Validation
-# ==============================================================================
-validate_environment() {
-    if [[ -z "${GITHUB_REPO:-}" ]]; then
-        log_error "GITHUB_REPO environment variable is not set"
-        exit 1
-    fi
-
-    if ! command -v gh &>/dev/null; then
-        log_error "gh CLI is not installed"
-        exit 1
-    fi
-
-    if ! command -v pueue &>/dev/null; then
-        log_error "pueue is not installed"
-        exit 1
-    fi
-
-    if ! command -v claude-flow &>/dev/null; then
-        log_error "claude-flow is not installed"
-        exit 1
-    fi
-
-    if [[ ! -d "${REPO_DIR}" ]]; then
-        log_error "Repository directory not found: ${REPO_DIR}"
-        exit 1
-    fi
+show_version() {
+    echo "flowgate version ${VERSION}"
 }
 
-validate_mode() {
-    local mode="$1"
-    if [[ "${mode}" != "swarm" && "${mode}" != "hive" ]]; then
-        log_error "Invalid mode: ${mode}. Must be 'swarm' or 'hive'"
-        exit 1
-    fi
-}
+# -----------------------------------------------------------------------------
+# Repository Management
+# -----------------------------------------------------------------------------
+repo_add() {
+    local repo="$1"
 
-validate_issue_number() {
-    local issue="$1"
-    if ! [[ "${issue}" =~ ^[0-9]+$ ]]; then
-        log_error "Invalid issue number: ${issue}"
-        exit 1
-    fi
-}
-
-# ==============================================================================
-# Commands
-# ==============================================================================
-cmd_status() {
-    log_info "Fetching pueue status..."
-    pueue status
-}
-
-cmd_process_issue() {
-    local mode="$1"
-    local issue_number="$2"
-
-    log_info "Processing issue #${issue_number} with mode: ${mode}"
-
-    # Fetch issue data
-    log_info "Fetching issue from ${GITHUB_REPO}..."
-    local issue_data
-    issue_data=$(gh issue view "${issue_number}" --repo "${GITHUB_REPO}" --json body,title 2>&1) || {
-        log_error "Failed to fetch issue #${issue_number}: ${issue_data}"
-        exit 1
-    }
-
-    local title
-    local body
-    title=$(echo "${issue_data}" | jq -r '.title')
-    body=$(echo "${issue_data}" | jq -r '.body')
-
-    if [[ -z "${title}" || "${title}" == "null" ]]; then
-        log_error "Issue #${issue_number} not found or has no title"
-        exit 1
+    # Validate repo format
+    if [[ ! "$repo" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$ ]]; then
+        die "Invalid repository format. Expected: owner/repo"
     fi
 
-    log_success "Fetched issue: ${title}"
+    local owner="${repo%/*}"
+    local name="${repo#*/}"
+    local repo_path="${REPOS_DIR}/${owner}/${name}"
 
-    # Create worktree
-    local branch_name="issue-${issue_number}"
-    local worktree_path="${WORKTREES_DIR}/${branch_name}"
+    info "Adding repository: ${CYAN}${repo}${NC}"
 
-    cd "${REPO_DIR}"
-
-    # Create worktrees directory if not exists
-    mkdir -p "${WORKTREES_DIR}"
-
-    # Check if worktree already exists
-    if [[ -d "${worktree_path}" ]]; then
-        log_warn "Worktree already exists: ${worktree_path}"
-        log_info "Removing existing worktree..."
-        git worktree remove --force "${worktree_path}" 2>/dev/null || true
-        git branch -D "${branch_name}" 2>/dev/null || true
-    fi
-
-    log_info "Creating worktree: ${worktree_path}"
-    git worktree add -b "${branch_name}" "${worktree_path}" || {
-        log_error "Failed to create worktree"
-        exit 1
-    }
-    log_success "Worktree created"
-
-    # Generate task prompt
-    local task_prompt
-    task_prompt=$(generate_task_prompt "${title}" "${body}" "${issue_number}")
-
-    # Determine claude-flow command based on mode
-    local flow_mode
-    if [[ "${mode}" == "hive" ]]; then
-        flow_mode="hive-mind"
+    # Check if already exists
+    if grep -qxF "$repo" "$REPOS_META" 2>/dev/null; then
+        warn "Repository already in watch list"
     else
-        flow_mode="swarm"
+        echo "$repo" >> "$REPOS_META"
+        success "Added to watch list"
     fi
 
-    # Queue the task with pueue
-    local pueue_command="cd '${worktree_path}' && claude-flow ${flow_mode} '${task_prompt}'"
+    # Clone if not exists
+    if [[ -d "$repo_path/.git" ]]; then
+        info "Repository already cloned at ${repo_path}"
+    else
+        info "Cloning repository..."
+        mkdir -p "${REPOS_DIR}/${owner}"
+        if gh repo clone "$repo" "$repo_path"; then
+            success "Cloned to ${repo_path}"
+        else
+            die "Failed to clone repository"
+        fi
+    fi
 
-    log_info "Queuing task with pueue..."
-    local task_id
-    task_id=$(pueue add --print-task-id -- bash -c "${pueue_command}") || {
-        log_error "Failed to queue task"
-        exit 1
-    }
-
-    log_success "Task queued successfully!"
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}Issue:${NC}     #${issue_number} - ${title}"
-    echo -e "${GREEN}Mode:${NC}      ${mode} (${flow_mode})"
-    echo -e "${GREEN}Worktree:${NC}  ${worktree_path}"
-    echo -e "${GREEN}Task ID:${NC}   ${task_id}"
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
-    echo -e "Use ${YELLOW}flowgate status${NC} to check progress"
+    success "Ready! Add '${CYAN}flowgate${NC}' label to any issue in ${CYAN}${repo}${NC}."
 }
 
-generate_task_prompt() {
-    local title="$1"
-    local body="$2"
-    local issue_number="$3"
+repo_remove() {
+    local repo="$1"
 
-    # Escape single quotes in body for shell safety
-    local escaped_body="${body//\'/\'\\\'\'}"
-    local escaped_title="${title//\'/\'\\\'\'}"
+    if [[ ! -f "$REPOS_META" ]]; then
+        die "No repositories configured"
+    fi
 
-    cat <<EOF
-Implement the following GitHub issue and create a Pull Request.
+    if ! grep -qxF "$repo" "$REPOS_META" 2>/dev/null; then
+        die "Repository not in watch list: ${repo}"
+    fi
 
-## Issue #${issue_number}: ${escaped_title}
+    # Remove from list
+    local tmp
+    tmp=$(mktemp)
+    grep -vxF "$repo" "$REPOS_META" > "$tmp" || true
+    mv "$tmp" "$REPOS_META"
 
-${escaped_body}
+    success "Removed ${CYAN}${repo}${NC} from watch list"
+    info "Note: Repository files in ${REPOS_DIR} were not deleted"
+}
+
+repo_list() {
+    if [[ ! -f "$REPOS_META" ]] || [[ ! -s "$REPOS_META" ]]; then
+        info "No repositories configured"
+        echo ""
+        echo "Add a repository with: ${CYAN}flowgate repo add owner/repo${NC}"
+        return
+    fi
+
+    echo -e "${BOLD}Watched Repositories:${NC}"
+    echo ""
+    while IFS= read -r repo; do
+        [[ -z "$repo" ]] && continue
+        local repo_path="${REPOS_DIR}/${repo}"
+        if [[ -d "$repo_path/.git" ]]; then
+            echo -e "  ${GREEN}*${NC} ${repo} ${CYAN}(cloned)${NC}"
+        else
+            echo -e "  ${YELLOW}!${NC} ${repo} ${YELLOW}(not cloned)${NC}"
+        fi
+    done < "$REPOS_META"
+    echo ""
+}
+
+handle_repo_command() {
+    local subcommand="${1:-}"
+    shift || true
+
+    case "$subcommand" in
+        add)
+            [[ -z "${1:-}" ]] && die "Usage: flowgate repo add <owner/repo>"
+            repo_add "$1"
+            ;;
+        remove|rm)
+            [[ -z "${1:-}" ]] && die "Usage: flowgate repo remove <owner/repo>"
+            repo_remove "$1"
+            ;;
+        list|ls)
+            repo_list
+            ;;
+        "")
+            die "Usage: flowgate repo <add|remove|list>"
+            ;;
+        *)
+            die "Unknown repo subcommand: ${subcommand}"
+            ;;
+    esac
+}
+
+# -----------------------------------------------------------------------------
+# Status
+# -----------------------------------------------------------------------------
+show_status() {
+    local group
+    group=$(get_pueue_group)
+
+    echo -e "${BOLD}flowgate Queue Status${NC}"
+    echo ""
+
+    # Check if pueued is running
+    if ! pueue status >/dev/null 2>&1; then
+        warn "pueued is not running"
+        echo "Start with: ${CYAN}pueued -d${NC}"
+        return 1
+    fi
+
+    # Check if group exists
+    if pueue group | grep -q "^${group}"; then
+        pueue status --group "$group"
+    else
+        info "No '${group}' group found. Tasks may be in default group."
+        pueue status
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Queue Issue
+# -----------------------------------------------------------------------------
+queue_issue() {
+    local repo="$1"
+    local issue_number="$2"
+    local mode="$3"
+
+    # Validate inputs
+    if [[ ! "$repo" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$ ]]; then
+        die "Invalid repository format. Expected: owner/repo"
+    fi
+
+    if [[ ! "$issue_number" =~ ^[0-9]+$ ]]; then
+        die "Invalid issue number: ${issue_number}"
+    fi
+
+    if [[ "$mode" != "swarm" && "$mode" != "hive" ]]; then
+        die "Invalid mode: ${mode}. Expected: swarm | hive"
+    fi
+
+    local owner="${repo%/*}"
+    local name="${repo#*/}"
+    local repo_path="${REPOS_DIR}/${owner}/${name}"
+    local branch="issue-${issue_number}"
+    local log_file="${TASKS_LOG_DIR}/${owner}-${name}-${issue_number}.log"
+    local group
+    group=$(get_pueue_group)
+
+    info "Queueing issue: ${CYAN}${repo}#${issue_number}${NC} (mode: ${YELLOW}${mode}${NC})"
+
+    # Check repo exists
+    if [[ ! -d "$repo_path/.git" ]]; then
+        die "Repository not cloned. Run: ${CYAN}flowgate repo add ${repo}${NC}"
+    fi
+
+    # Fetch issue
+    info "Fetching issue..."
+    local issue_body
+    local issue_title
+    if ! issue_body=$(gh issue view "$issue_number" --repo "$repo" --json body -q .body 2>&1); then
+        die "Failed to fetch issue: ${issue_body}"
+    fi
+    if ! issue_title=$(gh issue view "$issue_number" --repo "$repo" --json title -q .title 2>&1); then
+        die "Failed to fetch issue title: ${issue_title}"
+    fi
+
+    success "Fetched issue: ${issue_title}"
+
+    # Build task
+    local task
+    task=$(cat << TASK_EOF
+# ${issue_title}
+
+${issue_body}
 
 ---
+完了後、gh CLIを使ってPRを作成してください。
+- ブランチ: ${branch}
+- Issue: #${issue_number}
+TASK_EOF
+)
 
-## Instructions
-
-1. Implement the changes described in the issue above
-2. Make sure to test your implementation
-3. Commit your changes with clear, descriptive commit messages
-4. Create a Pull Request using the following command:
-
-   gh pr create --title "Fix #${issue_number}: ${escaped_title}" --body "Closes #${issue_number}
-
-## Summary
-
-[Describe what was implemented]
-
-## Changes
-
-[List the main changes]
-
-## Testing
-
-[Describe how it was tested]"
-
-Make sure the PR references the issue number so it will be automatically linked.
-EOF
-}
-
-# ==============================================================================
-# Main
-# ==============================================================================
-main() {
-    # Default mode from environment or fallback to swarm
-    local mode="${FLOWGATE_MODE:-swarm}"
-    local issue_number=""
-
-    # Parse arguments
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            -h|--help)
-                usage
-                exit 0
-                ;;
-            -m|--mode)
-                if [[ -z "${2:-}" ]]; then
-                    log_error "Mode requires a value"
-                    usage
-                    exit 1
-                fi
-                mode="$2"
-                shift 2
-                ;;
-            status)
-                validate_environment
-                cmd_status
-                exit 0
-                ;;
-            -*)
-                log_error "Unknown option: $1"
-                usage
-                exit 1
-                ;;
-            *)
-                issue_number="$1"
-                shift
-                ;;
-        esac
-    done
-
-    # Validate
-    if [[ -z "${issue_number}" ]]; then
-        log_error "Issue number is required"
-        usage
-        exit 1
+    # Build claude-flow command
+    local claude_cmd
+    if [[ "$mode" == "hive" ]]; then
+        claude_cmd="npx claude-flow@alpha hive-mind"
+    else
+        claude_cmd="npx claude-flow@alpha swarm"
     fi
 
-    validate_environment
-    validate_mode "${mode}"
-    validate_issue_number "${issue_number}"
+    # Build pueue command
+    local pueue_cmd
+    pueue_cmd=$(cat << CMD_EOF
+cd "${repo_path}" && \\
+git fetch origin && \\
+git checkout main && \\
+git pull origin main && \\
+git worktree add -b "${branch}" ".worktrees/${branch}" && \\
+cd ".worktrees/${branch}" && \\
+${claude_cmd} '${task//\'/\'\\\'\'}' --claude 2>&1 | tee "${log_file}"
+CMD_EOF
+)
 
-    # Process the issue
-    cmd_process_issue "${mode}" "${issue_number}"
+    # Ensure pueue group exists
+    if ! pueue group 2>/dev/null | grep -q "^${group}"; then
+        info "Creating pueue group: ${group}"
+        pueue group add "$group" 2>/dev/null || true
+    fi
+
+    # Add to pueue
+    info "Adding to pueue queue..."
+    local task_id
+    if task_id=$(pueue add --group "$group" --print-task-id -- bash -c "$pueue_cmd" 2>&1); then
+        success "Queued as task ${CYAN}#${task_id}${NC}"
+        echo ""
+        echo "Monitor with:"
+        echo "  ${CYAN}pueue status --group ${group}${NC}"
+        echo "  ${CYAN}pueue log ${task_id}${NC}"
+        echo ""
+        echo "Log file: ${YELLOW}${log_file}${NC}"
+    else
+        die "Failed to queue task: ${task_id}"
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+main() {
+    ensure_dirs
+
+    # No arguments
+    if [[ $# -eq 0 ]]; then
+        show_help
+        exit 0
+    fi
+
+    # Parse first argument
+    local cmd="$1"
+    shift
+
+    case "$cmd" in
+        -h|--help|help)
+            show_help
+            exit 0
+            ;;
+        -v|--version|version)
+            show_version
+            exit 0
+            ;;
+        status)
+            check_dependencies
+            show_status
+            exit 0
+            ;;
+        repo)
+            check_dependencies
+            handle_repo_command "$@"
+            exit 0
+            ;;
+        *)
+            # Assume it's owner/repo
+            check_dependencies
+
+            local repo="$cmd"
+            local mode
+            mode=$(get_default_mode)
+            local issue_number=""
+
+            # Parse remaining arguments
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    -m|--mode)
+                        [[ -z "${2:-}" ]] && die "Mode requires an argument"
+                        mode="$2"
+                        shift 2
+                        ;;
+                    -h|--help)
+                        show_help
+                        exit 0
+                        ;;
+                    *)
+                        if [[ -z "$issue_number" ]]; then
+                            issue_number="$1"
+                        else
+                            die "Unexpected argument: $1"
+                        fi
+                        shift
+                        ;;
+                esac
+            done
+
+            if [[ -z "$issue_number" ]]; then
+                die "Issue number required. Usage: flowgate <owner/repo> <issue-number>"
+            fi
+
+            queue_issue "$repo" "$issue_number" "$mode"
+            ;;
+    esac
 }
 
 main "$@"

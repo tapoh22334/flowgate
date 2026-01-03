@@ -1,0 +1,9 @@
+[Unit]
+Description=flowgate watcher
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/flowgate-watcher
+StandardOutput=append:%h/.flowgate/logs/watcher.log
+StandardError=append:%h/.flowgate/logs/watcher.log

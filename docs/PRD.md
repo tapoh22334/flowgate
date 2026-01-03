@@ -4,7 +4,7 @@
 
 ## 概要
 
-GitHub Issueにラベルを付けると、claude-flow (swarm/hive-mind) でタスクを実行しPRを作成する。全てDockerコンテナ内で完結。
+GitHub Issueにラベルを付けると、claude-flow (swarm/hive-mind) でタスクを実行しPRを作成する。複数リポジトリ対応。
 
 ## 使い方
 
@@ -24,125 +24,146 @@ GitHub Issueにラベルを付けると、claude-flow (swarm/hive-mind) でタ�
 ### 手動実行
 
 ```bash
-docker exec flowgate flowgate 123
-docker exec flowgate flowgate -m hive 123
-docker exec flowgate flowgate status
+flowgate owner/repo 123
+flowgate owner/repo -m hive 123
+flowgate status
 ```
 
 ## アーキテクチャ
 
 ```
-┌─────────────────────────────────────────────────────┐
-│ Docker Container                                    │
-│                                                     │
-│  ┌─────────────────┐    ┌─────────────────┐        │
-│  │ flowgate-watcher│───▶│    flowgate     │        │
-│  │ (cron 1min)     │    │     (CLI)       │        │
-│  └─────────────────┘    └────────┬────────┘        │
-│                                  │                  │
-│                                  ▼                  │
-│                         ┌─────────────────┐        │
-│                         │     pueue       │        │
-│                         │    (queue)      │        │
-│                         └────────┬────────┘        │
-│                                  │                  │
-│                                  ▼                  │
-│  ┌─────────────────┐    ┌─────────────────┐        │
-│  │  claude code    │◀───│  claude-flow    │        │
-│  │  (認証済み)     │    │ swarm/hive-mind │        │
-│  └─────────────────┘    └─────────────────┘        │
-│                                  │                  │
-│                                  ▼                  │
-│                         ┌─────────────────┐        │
-│                         │   git worktree  │        │
-│                         │   + gh pr create│        │
-│                         └─────────────────┘        │
-└─────────────────────────────────────────────────────┘
-         │
-         │ volumes (永続化)
-         ▼
-    ~/.claude/        # Claude認証
-    ~/.config/gh/     # GitHub認証
-    ./repos/          # リポジトリ
-```
-
-## 動作フロー
-
-```
-1. flowgate-watcher (cron毎分)
-   │
-   ├─▶ gh issue list --repo $REPO --label "flowgate*"
-   │
-   ├─▶ ラベルからモード判定
-   │     flowgate:swarm → swarm
-   │     flowgate:hive  → hive
-   │     flowgate       → $FLOWGATE_MODE
-   │
-   ├─▶ flowgate -m <mode> <issue-number>
-   │
-   └─▶ gh issue edit --remove-label <label>
-
-2. flowgate (CLI)
-   │
-   ├─▶ gh issue view <n> --json body
-   │
-   ├─▶ タスク生成 (本文 + PR作成指示)
-   │
-   └─▶ pueue add "..."
-
-3. pueue (実行時)
-   │
-   ├─▶ git worktree add -b issue-<n>
-   │
-   ├─▶ cd .worktrees/issue-<n>
-   │
-   └─▶ claude-flow swarm/hive-mind "<task>"
-         │
-         └─▶ (Claude が実装 + gh pr create)
+┌─────────────────────────────────────────────────────────┐
+│ flowgate-watcher (systemd)                              │
+│                                                         │
+│  監視リポジトリ: ~/.flowgate/repos.meta                │
+│    - owner/repo-a                                       │
+│    - owner/repo-b                                       │
+│                                                         │
+│  毎分ポーリング                                         │
+│    ├─▶ gh issue list --repo owner/repo-a --label ...   │
+│    └─▶ gh issue list --repo owner/repo-b --label ...   │
+└───────────────────────┬─────────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────────┐
+│ flowgate (CLI)                                          │
+│                                                         │
+│  flowgate owner/repo 123                                │
+│    │                                                    │
+│    ├─▶ gh issue view 123 --repo owner/repo             │
+│    │                                                    │
+│    └─▶ pueue add "..."                                 │
+└───────────────────────┬─────────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────────┐
+│ pueue (queue)                                           │
+│                                                         │
+│  Task: owner/repo#123                                   │
+│    │                                                    │
+│    ├─▶ cd ~/.flowgate/repos/owner/repo                 │
+│    ├─▶ git worktree add -b issue-123                   │
+│    └─▶ claude-flow swarm/hive-mind "<task>"            │
+│          │                                              │
+│          └─▶ gh pr create                              │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ## ファイル構成
 
 ```
-flowgate/
-├── Dockerfile
-├── docker-compose.yml
-├── entrypoint.sh
+flowgate/                         # インストール先
+├── install.sh
+├── init.sh
 ├── scripts/
-│   ├── flowgate.sh
-│   └── flowgate-watcher.sh
-├── .env.example
+│   ├── flowgate.sh               # CLI
+│   └── flowgate-watcher.sh       # 1回実行（timerから呼ばれる）
+├── systemd/
+│   ├── flowgate.service          # watcher実行用
+│   └── flowgate.timer            # 1分間隔トリガー
 └── README.md
+
+~/.flowgate/                      # ランタイムデータ
+├── config.toml                   # 設定
+├── repos.meta                    # 監視リポジトリ一覧
+├── logs/
+│   ├── watcher.log
+│   └── tasks/
+│       ├── owner-repo-123.log
+│       └── ...
+└── repos/                        # 作業ディレクトリ
+    ├── owner/
+    │   ├── repo-a/
+    │   └── repo-b/
+    └── ...
 ```
 
-## 環境変数
+## 設定
 
-| 変数 | 必須 | 説明 | 例 |
-|------|------|------|-----|
-| GITHUB_REPO | ✓ | 監視対象リポジトリ | owner/repo |
-| FLOWGATE_MODE | | デフォルトモード | swarm / hive |
-| POLL_INTERVAL | | ポーリング間隔(秒) | 60 |
-| PUEUE_PARALLEL | | 並行実行数 | 2 |
+### ~/.flowgate/config.toml
+
+```toml
+[general]
+mode = "swarm"          # デフォルトモード: swarm | hive
+poll_interval = 60      # ポーリング間隔(秒)
+
+[pueue]
+parallel = 1            # 並行実行数
+group = "flowgate"      # pueueグループ名
+```
+
+### ~/.flowgate/repos.meta
+
+```
+owner/repo-a
+owner/repo-b
+another/project
+```
+
+## コマンド
+
+### flowgate
+
+```bash
+# Issueをキューに追加
+flowgate <owner/repo> <issue-number>
+flowgate <owner/repo> -m hive <issue-number>
+
+# キュー状態
+flowgate status
+
+# リポジトリ管理
+flowgate repo add owner/repo      # 監視対象に追加 + clone
+flowgate repo remove owner/repo   # 監視対象から削除
+flowgate repo list                # 一覧表示
+```
 
 ## セットアップ
 
 ```bash
 git clone https://github.com/takoh/flowgate && cd flowgate
-./init.sh owner/repo
+./install.sh
+./init.sh
 ```
 
-### init.sh の動作
+### install.sh
+
+依存をインストール:
+- gh CLI
+- pueue / pueued
+- claude-flow (npm)
+- claude code (npm)
+
+### init.sh
 
 ```
-$ ./init.sh owner/repo
+$ ./init.sh
 
 flowgate setup
 ==============
-[✓] Docker running
-[✓] Container built
+[✓] Dependencies installed
 [ ] GitHub authenticated
-[ ] Claude authenticated  
-[ ] Repository cloned
+[ ] Claude authenticated
 
 → Starting GitHub auth...
   Open: https://github.com/login/device
@@ -153,52 +174,116 @@ flowgate setup
   Open: https://claude.ai/oauth/...
   Waiting... [✓]
 
-→ Cloning repository...
-  [✓] owner/repo cloned
+→ Starting pueued...
+  [✓] pueued running
+
+→ Creating flowgate group in pueue...
+  [✓] Group 'flowgate' created
 
 Setup complete!
-Add 'flowgate' label to any issue to start.
+
+Next steps:
+  flowgate repo add owner/repo
+  systemctl --user enable --now flowgate.timer
 ```
 
-### init.sh 内部フロー
+## リポジトリ追加
 
 ```
-1. 事前チェック
-   ├─ docker --version
-   └─ docker compose version
+$ flowgate repo add takoh/my-project
 
-2. 環境構築
-   ├─ .env 生成 (GITHUB_REPO=$1)
-   ├─ docker compose build
-   └─ docker compose up -d
+Adding repository: takoh/my-project
+[✓] Cloned to ~/.flowgate/repos/takoh/my-project
+[✓] Added to watch list
 
-3. GitHub認証
-   └─ docker exec flowgate gh auth login --web
-      (Device code flow)
-
-4. Claude認証
-   └─ docker exec flowgate claude login
-      (OAuth - URL表示して手動でブラウザ)
-
-5. リポジトリclone
-   └─ docker exec flowgate git clone https://github.com/$1 /repos/repo
-
-6. 完了メッセージ
+Ready! Add 'flowgate' label to any issue in takoh/my-project.
 ```
 
-### 再セットアップ / 認証更新
+## 起動
 
 ```bash
-# 認証だけやり直し
-./init.sh --reauth
+# systemd timerで常駐
+systemctl --user enable --now flowgate.timer
 
-# 全部やり直し
-./init.sh --reset owner/repo
+# 状態確認
+systemctl --user status flowgate.timer
+systemctl --user list-timers
+
+# ログ確認
+journalctl --user -u flowgate -f
+
+# 手動実行（デバッグ用）
+./scripts/flowgate-watcher.sh
 ```
 
-## 依存（コンテナ内）
+## 動作フロー詳細
 
-- Ubuntu 24.04
+### flowgate-watcher.sh
+
+```bash
+#!/bin/bash
+# 1回実行（systemd timerから呼ばれる）
+
+for repo in $(cat ~/.flowgate/repos.meta); do
+  for label in "flowgate" "flowgate:swarm" "flowgate:hive"; do
+    issues=$(gh issue list --repo "$repo" --label "$label" --json number -q '.[].number')
+    
+    for issue in $issues; do
+      mode=$(parse_mode "$label")
+      flowgate "$repo" -m "$mode" "$issue"
+      gh issue edit "$issue" --repo "$repo" --remove-label "$label"
+    done
+  done
+done
+```
+
+### systemd/flowgate.service
+
+```ini
+[Unit]
+Description=flowgate watcher
+
+[Service]
+Type=oneshot
+ExecStart=/path/to/flowgate/scripts/flowgate-watcher.sh
+```
+
+### systemd/flowgate.timer
+
+```ini
+[Unit]
+Description=flowgate watcher timer
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+
+[Install]
+WantedBy=timers.target
+```
+
+### flowgate.sh (キューイング)
+
+```bash
+flowgate owner/repo 123
+  │
+  ├─▶ BODY=$(gh issue view 123 --repo owner/repo --json body -q .body)
+  │
+  ├─▶ TASK="$BODY\n---\n完了後、gh CLIを使ってPRを作成してください。"
+  │
+  ├─▶ REPO_DIR=~/.flowgate/repos/owner/repo
+  │
+  └─▶ pueue add --group flowgate -- bash -c "
+        cd $REPO_DIR
+        BRANCH=issue-123
+        git worktree add -b $BRANCH .worktrees/$BRANCH
+        cd .worktrees/$BRANCH
+        npx claude-flow@alpha swarm '$TASK' --claude
+      "
+```
+
+## 依存
+
 - Node.js 20+
 - git
 - gh CLI
@@ -206,17 +291,84 @@ Add 'flowgate' label to any issue to start.
 - claude-flow (npm)
 - claude code (npm)
 
-## Volume
-
-| パス | 用途 |
-|------|------|
-| `~/.claude` | Claude認証情報 |
-| `~/.config/gh` | GitHub認証情報 |
-| `./repos` | 作業リポジトリ |
-| `pueue-data` | pueueの状態 |
-
 ## 制約・注意
 
-- 初回は手動で `claude login` / `gh auth login` が必要
-- Claude認証トークンの有効期限切れ時は再認証
-- 1コンテナ = 1リポジトリを想定
+- 初回は手動で認証が必要
+- Claude認証トークンの有効期限切れ時は `./init.sh --reauth`
+- pueuedが起動している必要あり
+
+## オブザーバビリティ
+
+### ログ出力
+
+```
+~/.flowgate/logs/
+├── watcher.log                    # watcher全体
+└── tasks/
+    ├── owner-repo-123.log         # タスクごと
+    ├── owner-repo-124.log
+    └── another-project-45.log
+```
+
+- ログローテーション: 30日保持、古いものは自動削除
+
+### Issueコメント
+
+**開始時:**
+```
+🚀 flowgate: タスク開始 (swarm)
+ログ: ~/.flowgate/logs/tasks/owner-repo-123.log
+```
+
+**成功時:**
+```
+✅ flowgate: 完了
+PR: #456
+```
+
+**失敗時:**
+```
+❌ flowgate: 失敗
+
+エラー内容（末尾100行程度）
+
+フルログ: ~/.flowgate/logs/tasks/owner-repo-123.log
+```
+
+**タイムアウト時:**
+```
+⏱️ flowgate: タイムアウト (6時間超過)
+フルログ: ~/.flowgate/logs/tasks/owner-repo-123.log
+```
+
+### ラベル遷移
+
+```
+[トリガー]              [実行中]              [結果]
+flowgate        ─┐
+flowgate:swarm  ─┼─▶ flowgate:processing ─┬─▶ (ラベル削除) 成功
+flowgate:hive   ─┘                        ├─▶ flowgate:failed
+                                          └─▶ flowgate:timeout
+```
+
+### リトライ
+
+`flowgate:failed` または `flowgate:timeout` を手動で `flowgate` に付け替えると再実行される。
+
+## 設定
+
+### ~/.flowgate/config.toml (フル版)
+
+```toml
+[general]
+mode = "swarm"          # デフォルトモード: swarm | hive
+poll_interval = 60      # ポーリング間隔(秒)
+timeout = 21600         # タイムアウト(秒) = 6時間
+
+[pueue]
+parallel = 1            # 並行実行数
+group = "flowgate"      # pueueグループ名
+
+[logs]
+retention_days = 30     # ログ保持日数
+```

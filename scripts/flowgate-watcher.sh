@@ -1,31 +1,36 @@
 #!/usr/bin/env bash
-#
-# flowgate-watcher.sh
-# Watches GitHub issues with flowgate labels and dispatches to flowgate CLI
-#
-# Runs via cron every minute, queries for issues with flowgate* labels,
-# determines mode from label, calls flowgate, and removes the label.
-#
-
 set -euo pipefail
 
-# Configuration
-LOCK_FILE="/var/run/flowgate-watcher.lock"
-LOG_FILE="${FLOWGATE_LOG_FILE:-/var/log/flowgate-watcher.log}"
-GITHUB_REPO="${GITHUB_REPO:?GITHUB_REPO is required}"
-DEFAULT_MODE="${FLOWGATE_MODE:-swarm}"
+# flowgate-watcher.sh
+# GitHub Issueを監視し、flowgateラベル付きのIssueをキューに追加する
+# systemd timerから1分ごとに呼び出される
 
-# Ensure log directory exists
-mkdir -p "$(dirname "$LOG_FILE")"
+# ============================================================
+# 設定
+# ============================================================
 
-# Logging function
+FLOWGATE_DIR="${HOME}/.flowgate"
+REPOS_META="${FLOWGATE_DIR}/repos.meta"
+LOG_DIR="${FLOWGATE_DIR}/logs"
+LOG_FILE="${LOG_DIR}/watcher.log"
+CONFIG_FILE="${FLOWGATE_DIR}/config.toml"
+
+# 検索対象ラベル
+TRIGGER_LABELS=("flowgate" "flowgate:swarm" "flowgate:hive")
+PROCESSING_LABEL="flowgate:processing"
+
+# ============================================================
+# ユーティリティ関数
+# ============================================================
+
+# ログ出力
 log() {
     local level="$1"
     shift
     local message="$*"
     local timestamp
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo "[$timestamp] [$level] $message" | tee -a "$LOG_FILE"
+    echo "[${timestamp}] [${level}] ${message}" | tee -a "${LOG_FILE}"
 }
 
 log_info() {
@@ -40,178 +45,179 @@ log_error() {
     log "ERROR" "$@"
 }
 
-# Cleanup function
-cleanup() {
-    rm -f "$LOCK_FILE"
-    log_info "Watcher stopped, lock released"
-}
-
-# Check if another instance is running
-acquire_lock() {
-    if [ -f "$LOCK_FILE" ]; then
-        local pid
-        pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
-        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            log_warn "Another instance is running (PID: $pid), exiting"
-            exit 0
-        else
-            log_warn "Stale lock file found, removing"
-            rm -f "$LOCK_FILE"
-        fi
-    fi
-
-    echo $$ > "$LOCK_FILE"
-    trap cleanup EXIT
-    log_info "Lock acquired (PID: $$)"
-}
-
-# Determine mode from label name
-get_mode_from_label() {
+# ラベルからモードを解析
+parse_mode() {
     local label="$1"
-
     case "$label" in
         "flowgate:swarm")
             echo "swarm"
             ;;
         "flowgate:hive")
-            echo "hive-mind"
+            echo "hive"
             ;;
         "flowgate")
-            echo "$DEFAULT_MODE"
+            # デフォルトモードを設定ファイルから取得（なければswarm）
+            if [[ -f "$CONFIG_FILE" ]]; then
+                local mode
+                mode=$(grep -E '^mode\s*=' "$CONFIG_FILE" 2>/dev/null | sed 's/.*=\s*"\([^"]*\)".*/\1/' || echo "swarm")
+                if [[ -n "$mode" ]]; then
+                    echo "$mode"
+                else
+                    echo "swarm"
+                fi
+            else
+                echo "swarm"
+            fi
             ;;
         *)
-            # Unknown flowgate label, use default
-            log_warn "Unknown flowgate label: $label, using default mode: $DEFAULT_MODE"
-            echo "$DEFAULT_MODE"
+            echo "swarm"
             ;;
     esac
 }
 
-# Process a single issue
-process_issue() {
-    local issue_number="$1"
-    local label="$2"
-    local mode
+# Issueが既にprocessing中かチェック
+is_processing() {
+    local repo="$1"
+    local issue_number="$2"
 
-    mode=$(get_mode_from_label "$label")
+    local labels
+    labels=$(gh issue view "$issue_number" --repo "$repo" --json labels -q '.labels[].name' 2>/dev/null || echo "")
 
-    log_info "Processing issue #$issue_number with label '$label' in mode '$mode'"
-
-    # Call flowgate CLI
-    if flowgate -m "$mode" "$issue_number"; then
-        log_info "Successfully queued issue #$issue_number"
-
-        # Remove the label after successful processing
-        if gh issue edit "$issue_number" --repo "$GITHUB_REPO" --remove-label "$label"; then
-            log_info "Removed label '$label' from issue #$issue_number"
-        else
-            log_error "Failed to remove label '$label' from issue #$issue_number"
-        fi
+    if echo "$labels" | grep -qF "$PROCESSING_LABEL"; then
+        return 0  # processing中
     else
-        log_error "Failed to process issue #$issue_number"
-        return 1
+        return 1  # processing中でない
     fi
 }
 
-# Query GitHub for issues with flowgate labels
-fetch_flowgate_issues() {
-    # Query issues with any flowgate* label
-    # We use multiple label queries since gh doesn't support wildcards
-    local issues_json
+# ============================================================
+# 初期化
+# ============================================================
 
-    # Get all issues with flowgate-related labels
-    issues_json=$(gh issue list \
-        --repo "$GITHUB_REPO" \
-        --label "flowgate" \
-        --label "flowgate:swarm" \
-        --label "flowgate:hive" \
-        --json number,labels \
-        --limit 100 2>/dev/null || echo "[]")
+init() {
+    # ログディレクトリの作成
+    mkdir -p "${LOG_DIR}"
 
-    # If the above doesn't work (labels are OR'd), try individual queries
-    if [ "$issues_json" = "[]" ] || [ -z "$issues_json" ]; then
-        local flowgate_issues swarm_issues hive_issues
-
-        flowgate_issues=$(gh issue list --repo "$GITHUB_REPO" --label "flowgate" --json number,labels --limit 100 2>/dev/null || echo "[]")
-        swarm_issues=$(gh issue list --repo "$GITHUB_REPO" --label "flowgate:swarm" --json number,labels --limit 100 2>/dev/null || echo "[]")
-        hive_issues=$(gh issue list --repo "$GITHUB_REPO" --label "flowgate:hive" --json number,labels --limit 100 2>/dev/null || echo "[]")
-
-        # Merge and deduplicate
-        issues_json=$(echo "$flowgate_issues $swarm_issues $hive_issues" | jq -s 'add | unique_by(.number)')
-    fi
-
-    echo "$issues_json"
-}
-
-# Main execution
-main() {
-    log_info "=== flowgate-watcher started ==="
-
-    # Acquire lock to prevent concurrent runs
-    acquire_lock
-
-    # Verify dependencies
-    if ! command -v gh &>/dev/null; then
-        log_error "gh CLI not found"
-        exit 1
-    fi
-
-    if ! command -v jq &>/dev/null; then
-        log_error "jq not found"
-        exit 1
-    fi
-
-    if ! command -v flowgate &>/dev/null; then
-        log_error "flowgate CLI not found"
-        exit 1
-    fi
-
-    # Fetch issues with flowgate labels
-    log_info "Fetching issues from $GITHUB_REPO with flowgate labels..."
-    local issues_json
-    issues_json=$(fetch_flowgate_issues)
-
-    # Count issues
-    local issue_count
-    issue_count=$(echo "$issues_json" | jq 'length')
-
-    if [ "$issue_count" -eq 0 ]; then
-        log_info "No issues with flowgate labels found"
+    # repos.metaの存在確認
+    if [[ ! -f "$REPOS_META" ]]; then
+        log_warn "repos.meta not found: ${REPOS_META}"
+        log_info "No repositories to watch. Add repositories with: flowgate repo add <owner/repo>"
         exit 0
     fi
 
-    log_info "Found $issue_count issue(s) to process"
+    # gh CLIの認証確認
+    if ! gh auth status &>/dev/null; then
+        log_error "GitHub CLI not authenticated. Run: gh auth login"
+        exit 1
+    fi
+}
 
-    # Process each issue
-    echo "$issues_json" | jq -c '.[]' | while read -r issue; do
-        local issue_number
-        issue_number=$(echo "$issue" | jq -r '.number')
+# ============================================================
+# メイン処理
+# ============================================================
 
-        # Get flowgate labels for this issue
-        local labels
-        labels=$(echo "$issue" | jq -r '.labels[].name' | grep -E '^flowgate(:|$)' || true)
+process_issues() {
+    local repo="$1"
 
-        if [ -z "$labels" ]; then
-            log_warn "Issue #$issue_number has no flowgate labels, skipping"
+    log_info "Checking repository: ${repo}"
+
+    for label in "${TRIGGER_LABELS[@]}"; do
+        log_info "  Searching for label: ${label}"
+
+        # ラベル付きIssueを検索
+        local issues
+        issues=$(gh issue list --repo "$repo" --label "$label" --state open --json number -q '.[].number' 2>/dev/null || echo "")
+
+        if [[ -z "$issues" ]]; then
+            log_info "    No issues found with label: ${label}"
             continue
         fi
 
-        # Process with the first matching flowgate label
-        # Priority: flowgate:swarm > flowgate:hive > flowgate
-        local selected_label
-        if echo "$labels" | grep -q "^flowgate:swarm$"; then
-            selected_label="flowgate:swarm"
-        elif echo "$labels" | grep -q "^flowgate:hive$"; then
-            selected_label="flowgate:hive"
-        else
-            selected_label="flowgate"
-        fi
+        # 各Issueを処理
+        while IFS= read -r issue_number; do
+            [[ -z "$issue_number" ]] && continue
 
-        process_issue "$issue_number" "$selected_label" || true
+            log_info "    Found issue #${issue_number}"
+
+            # 重複実行防止: 既にprocessing中ならスキップ
+            if is_processing "$repo" "$issue_number"; then
+                log_warn "    Issue #${issue_number} is already processing. Skipping."
+                continue
+            fi
+
+            # モードを解析
+            local mode
+            mode=$(parse_mode "$label")
+            log_info "    Mode: ${mode}"
+
+            # processingラベルを追加
+            log_info "    Adding ${PROCESSING_LABEL} label..."
+            if ! gh issue edit "$issue_number" --repo "$repo" --add-label "$PROCESSING_LABEL" 2>/dev/null; then
+                log_error "    Failed to add ${PROCESSING_LABEL} label to issue #${issue_number}"
+                continue
+            fi
+
+            # flowgate CLIでキューに追加
+            log_info "    Adding to queue with flowgate CLI..."
+            local flowgate_cmd
+            flowgate_cmd="flowgate ${repo} -m ${mode} ${issue_number}"
+
+            if ! $flowgate_cmd 2>&1 | tee -a "${LOG_FILE}"; then
+                log_error "    Failed to queue issue #${issue_number}"
+                # 失敗時はprocessingラベルを削除
+                gh issue edit "$issue_number" --repo "$repo" --remove-label "$PROCESSING_LABEL" 2>/dev/null || true
+                continue
+            fi
+
+            # 元のトリガーラベルを削除
+            log_info "    Removing trigger label: ${label}"
+            if ! gh issue edit "$issue_number" --repo "$repo" --remove-label "$label" 2>/dev/null; then
+                log_warn "    Failed to remove label ${label} from issue #${issue_number}"
+            fi
+
+            log_info "    Successfully queued issue #${issue_number}"
+
+        done <<< "$issues"
     done
-
-    log_info "=== flowgate-watcher completed ==="
 }
 
-# Run main
+main() {
+    log_info "=========================================="
+    log_info "flowgate-watcher started"
+    log_info "=========================================="
+
+    # 初期化
+    init
+
+    # 監視対象リポジトリを読み込み
+    local repos
+    repos=$(grep -v '^#' "$REPOS_META" | grep -v '^$' || echo "")
+
+    if [[ -z "$repos" ]]; then
+        log_warn "No repositories configured in ${REPOS_META}"
+        exit 0
+    fi
+
+    # 各リポジトリを処理
+    while IFS= read -r repo; do
+        [[ -z "$repo" ]] && continue
+
+        # リポジトリ名の検証（owner/repo形式）
+        if [[ ! "$repo" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$ ]]; then
+            log_warn "Invalid repository format: ${repo}. Skipping."
+            continue
+        fi
+
+        process_issues "$repo"
+
+    done <<< "$repos"
+
+    log_info "flowgate-watcher completed"
+    log_info "=========================================="
+}
+
+# ============================================================
+# エントリーポイント
+# ============================================================
+
 main "$@"

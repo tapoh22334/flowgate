@@ -1,540 +1,449 @@
-#!/bin/bash
-#
-# flowgate init.sh - Setup wizard for flowgate
-#
-# Usage:
-#   ./init.sh owner/repo      - Full setup
-#   ./init.sh --reauth        - Re-authenticate only
-#   ./init.sh --reset owner/repo - Full reset and setup
-#
+#!/usr/bin/env bash
+set -euo pipefail
 
-set -e
+#=============================================================================
+# flowgate init.sh - セットアップウィザード
+#=============================================================================
 
-# ============================================================================
-# Colors and Formatting
-# ============================================================================
+# 色定義
 readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'
-readonly YELLOW='\033[0;33m'
+readonly YELLOW='\033[1;33m'
 readonly BLUE='\033[0;34m'
 readonly CYAN='\033[0;36m'
 readonly BOLD='\033[1m'
-readonly DIM='\033[2m'
 readonly NC='\033[0m' # No Color
 
-# Status indicators
-readonly CHECK="${GREEN}[✓]${NC}"
-readonly PENDING="${DIM}[ ]${NC}"
-readonly ARROW="${CYAN}→${NC}"
-readonly CROSS="${RED}[✗]${NC}"
+# ディレクトリ
+readonly FLOWGATE_DIR="${HOME}/.flowgate"
+readonly CONFIG_FILE="${FLOWGATE_DIR}/config.toml"
+readonly REPOS_META="${FLOWGATE_DIR}/repos.meta"
+readonly LOGS_DIR="${FLOWGATE_DIR}/logs"
+readonly REPOS_DIR="${FLOWGATE_DIR}/repos"
 
-# ============================================================================
-# Helper Functions
-# ============================================================================
+# pueueグループ名
+readonly PUEUE_GROUP="flowgate"
+
+#=============================================================================
+# ユーティリティ関数
+#=============================================================================
+
 print_header() {
     echo ""
     echo -e "${BOLD}${CYAN}flowgate setup${NC}"
-    echo -e "${DIM}==============${NC}"
-}
-
-print_status() {
-    local status="$1"
-    local message="$2"
-    echo -e "${status} ${message}"
+    echo -e "${CYAN}==============${NC}"
+    echo ""
 }
 
 print_step() {
-    local message="$1"
-    echo ""
-    echo -e "${ARROW} ${BOLD}${message}${NC}"
+    echo -e "${BOLD}→ $1${NC}"
 }
 
-print_error() {
-    local message="$1"
-    echo -e "${RED}Error: ${message}${NC}" >&2
+print_success() {
+    echo -e "  ${GREEN}[✓]${NC} $1"
 }
 
-print_warning() {
-    local message="$1"
-    echo -e "${YELLOW}Warning: ${message}${NC}"
+print_pending() {
+    echo -e "  ${YELLOW}[ ]${NC} $1"
+}
+
+print_fail() {
+    echo -e "  ${RED}[✗]${NC} $1"
 }
 
 print_info() {
+    echo -e "  ${BLUE}$1${NC}"
+}
+
+print_error() {
+    echo -e "${RED}Error: $1${NC}" >&2
+}
+
+confirm_prompt() {
     local message="$1"
-    echo -e "  ${DIM}${message}${NC}"
+    local response
+    echo -en "${YELLOW}${message} [y/N]:${NC} "
+    read -r response
+    [[ "$response" =~ ^[Yy]$ ]]
 }
 
-# ============================================================================
-# Validation Functions
-# ============================================================================
-validate_repo_format() {
-    local repo="$1"
-    if [[ ! "$repo" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ ]]; then
-        print_error "Invalid repository format. Expected: owner/repo"
-        exit 1
-    fi
+#=============================================================================
+# 依存関係チェック
+#=============================================================================
+
+check_command() {
+    command -v "$1" &>/dev/null
 }
 
-# ============================================================================
-# Pre-check Functions
-# ============================================================================
-check_docker() {
-    if command -v docker &> /dev/null && docker --version &> /dev/null; then
-        return 0
-    else
-        return 1
-    fi
-}
-
-check_docker_compose() {
-    if docker compose version &> /dev/null; then
-        return 0
-    else
-        return 1
-    fi
-}
-
-check_docker_running() {
-    if docker info &> /dev/null; then
-        return 0
-    else
-        return 1
-    fi
-}
-
-check_container_running() {
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^flowgate$'; then
-        return 0
-    else
-        return 1
-    fi
-}
-
-run_prechecks() {
+check_dependencies() {
     local all_ok=true
 
+    echo "Checking dependencies..."
     echo ""
-    if check_docker; then
-        print_status "$CHECK" "Docker installed"
+
+    # git
+    if check_command git; then
+        print_success "git"
     else
-        print_status "$CROSS" "Docker not found"
-        print_info "Please install Docker: https://docs.docker.com/get-docker/"
+        print_fail "git - not installed"
         all_ok=false
     fi
 
-    if check_docker_compose; then
-        print_status "$CHECK" "Docker Compose available"
+    # gh CLI
+    if check_command gh; then
+        print_success "gh CLI"
     else
-        print_status "$CROSS" "Docker Compose not found"
-        print_info "Please install Docker Compose: https://docs.docker.com/compose/install/"
+        print_fail "gh CLI - not installed"
         all_ok=false
     fi
 
-    if check_docker_running; then
-        print_status "$CHECK" "Docker daemon running"
+    # pueue
+    if check_command pueue; then
+        print_success "pueue"
     else
-        print_status "$CROSS" "Docker daemon not running"
-        print_info "Please start Docker Desktop or the Docker daemon"
+        print_fail "pueue - not installed"
         all_ok=false
     fi
 
-    if [ "$all_ok" = false ]; then
-        echo ""
-        print_error "Pre-checks failed. Please fix the above issues and try again."
-        exit 1
-    fi
-}
-
-# ============================================================================
-# Setup Functions
-# ============================================================================
-generate_env() {
-    local repo="$1"
-
-    print_step "Generating .env file..."
-
-    # Create .env from template or generate new
-    cat > .env << EOF
-# flowgate configuration
-GITHUB_REPO=${repo}
-FLOWGATE_MODE=swarm
-POLL_INTERVAL=60
-PUEUE_PARALLEL=2
-EOF
-
-    print_status "$CHECK" ".env generated (GITHUB_REPO=${repo})"
-}
-
-build_container() {
-    print_step "Building container..."
-
-    if docker compose build --quiet; then
-        print_status "$CHECK" "Container built"
+    # pueued
+    if check_command pueued; then
+        print_success "pueued"
     else
-        print_status "$CROSS" "Container build failed"
-        print_info "Hint: Check Dockerfile and docker-compose.yml for errors"
-        exit 1
+        print_fail "pueued - not installed"
+        all_ok=false
     fi
-}
 
-start_container() {
-    print_step "Starting container..."
-
-    if docker compose up -d; then
-        # Wait for container to be ready
-        sleep 2
-        if check_container_running; then
-            print_status "$CHECK" "Container started"
+    # Node.js
+    if check_command node; then
+        local node_version
+        node_version=$(node -v | sed 's/v//' | cut -d. -f1)
+        if [[ "$node_version" -ge 20 ]]; then
+            print_success "Node.js $(node -v)"
         else
-            print_status "$CROSS" "Container failed to start"
-            print_info "Hint: Check logs with 'docker compose logs'"
-            exit 1
+            print_fail "Node.js $(node -v) - version 20+ required"
+            all_ok=false
         fi
     else
-        print_status "$CROSS" "Failed to start container"
+        print_fail "Node.js - not installed"
+        all_ok=false
+    fi
+
+    # npx (comes with npm)
+    if check_command npx; then
+        print_success "npx"
+    else
+        print_fail "npx - not installed"
+        all_ok=false
+    fi
+
+    # claude-flow
+    if npx claude-flow@alpha --version &>/dev/null 2>&1; then
+        print_success "claude-flow"
+    else
+        print_pending "claude-flow - will be installed on first use"
+    fi
+
+    # claude (Claude Code CLI)
+    if check_command claude; then
+        print_success "claude (Claude Code)"
+    else
+        print_fail "claude (Claude Code) - not installed"
+        all_ok=false
+    fi
+
+    echo ""
+
+    if [[ "$all_ok" == false ]]; then
+        print_error "Some dependencies are missing. Please run install.sh first."
         exit 1
     fi
 }
 
-stop_container() {
-    print_step "Stopping container..."
+#=============================================================================
+# 認証チェック・実行
+#=============================================================================
 
-    if docker compose down 2>/dev/null; then
-        print_status "$CHECK" "Container stopped"
-    else
-        print_info "No container to stop"
-    fi
+check_github_auth() {
+    gh auth status &>/dev/null 2>&1
 }
 
-# ============================================================================
-# Authentication Functions
-# ============================================================================
-auth_github() {
-    print_step "Starting GitHub authentication..."
+do_github_auth() {
+    print_step "GitHub authentication..."
 
-    # Check if already authenticated
-    if docker exec flowgate gh auth status &>/dev/null; then
-        print_status "$CHECK" "GitHub already authenticated"
+    if check_github_auth && [[ "${REAUTH:-false}" != "true" ]]; then
+        print_success "Already authenticated"
         return 0
     fi
 
-    echo ""
-    print_info "GitHub uses device code authentication."
-    print_info "A code will be shown below. Open the URL and enter the code."
+    print_info "Starting GitHub authentication..."
     echo ""
 
-    # Run gh auth login with web flow
-    # The --web flag triggers device code flow
-    if docker exec -it flowgate gh auth login --hostname github.com --git-protocol https --web; then
-        echo ""
-        print_status "$CHECK" "GitHub authenticated"
+    if ! gh auth login; then
+        print_fail "GitHub authentication failed"
+        return 1
+    fi
+
+    if check_github_auth; then
+        print_success "GitHub authenticated"
     else
-        echo ""
-        print_status "$CROSS" "GitHub authentication failed"
-        print_info "Hint: Run './init.sh --reauth' to try again"
+        print_fail "GitHub authentication verification failed"
         return 1
     fi
 }
 
-auth_claude() {
-    print_step "Starting Claude authentication..."
+check_claude_auth() {
+    # Claude Code の認証状態を確認
+    # claude --version が成功し、認証エラーが出ないことを確認
+    claude --version &>/dev/null 2>&1
+}
 
-    # Check if already authenticated
-    if docker exec flowgate claude --version &>/dev/null; then
-        # Try a simple command to check auth status
-        if docker exec flowgate sh -c 'test -f ~/.claude/.credentials.json' 2>/dev/null; then
-            print_status "$CHECK" "Claude already authenticated"
+do_claude_auth() {
+    print_step "Claude authentication..."
+
+    if check_claude_auth && [[ "${REAUTH:-false}" != "true" ]]; then
+        print_success "Claude Code available"
+        # 実際の認証確認のためにシンプルなコマンドを実行してみる
+        if claude -p "echo test" &>/dev/null 2>&1; then
+            print_success "Claude authenticated"
             return 0
         fi
     fi
 
-    echo ""
-    print_info "Claude uses OAuth authentication."
-    print_info "A URL will be displayed. Open it in your browser to authenticate."
+    print_info "Please ensure Claude Code is authenticated."
+    print_info "If not authenticated, run: claude"
+    print_info "and follow the authentication flow."
     echo ""
 
-    # Run claude login
-    if docker exec -it flowgate claude login; then
-        echo ""
-        print_status "$CHECK" "Claude authenticated"
+    if confirm_prompt "Is Claude Code authenticated?"; then
+        print_success "Claude authentication confirmed"
+        return 0
     else
-        echo ""
-        print_status "$CROSS" "Claude authentication failed"
-        print_info "Hint: Run './init.sh --reauth' to try again"
-        return 1
+        print_pending "Claude authentication skipped (configure later)"
+        return 0
     fi
 }
 
-# ============================================================================
-# Repository Functions
-# ============================================================================
-clone_repository() {
-    local repo="$1"
+#=============================================================================
+# pueued 起動
+#=============================================================================
 
-    print_step "Cloning repository..."
+check_pueued_running() {
+    pueue status &>/dev/null 2>&1
+}
 
-    # Check if already cloned
-    if docker exec flowgate test -d /repos/repo/.git 2>/dev/null; then
-        print_status "$CHECK" "Repository already cloned"
+start_pueued() {
+    print_step "Starting pueued..."
 
-        # Update the remote URL in case repo changed
-        docker exec flowgate git -C /repos/repo remote set-url origin "https://github.com/${repo}.git" 2>/dev/null || true
-
-        print_info "Updating remote to https://github.com/${repo}.git"
+    if check_pueued_running; then
+        print_success "pueued already running"
         return 0
     fi
 
-    # Create repos directory if needed
-    docker exec flowgate mkdir -p /repos
+    print_info "Starting pueued daemon..."
 
-    # Clone the repository
-    if docker exec flowgate git clone "https://github.com/${repo}.git" /repos/repo; then
-        print_status "$CHECK" "${repo} cloned"
+    # pueued をバックグラウンドで起動
+    pueued --daemonize &>/dev/null 2>&1 || true
+
+    # 起動待機
+    local max_attempts=10
+    local attempt=0
+    while [[ $attempt -lt $max_attempts ]]; do
+        if check_pueued_running; then
+            print_success "pueued started"
+            return 0
+        fi
+        sleep 0.5
+        ((attempt++))
+    done
+
+    print_fail "Failed to start pueued"
+    return 1
+}
+
+#=============================================================================
+# pueue グループ作成
+#=============================================================================
+
+check_pueue_group() {
+    pueue group | grep -q "^${PUEUE_GROUP}" 2>/dev/null
+}
+
+create_pueue_group() {
+    print_step "Creating pueue group '${PUEUE_GROUP}'..."
+
+    if check_pueue_group; then
+        print_success "Group '${PUEUE_GROUP}' already exists"
+        return 0
+    fi
+
+    if pueue group add "$PUEUE_GROUP" &>/dev/null; then
+        print_success "Group '${PUEUE_GROUP}' created"
+
+        # 並行実行数を1に設定
+        pueue parallel 1 --group "$PUEUE_GROUP" &>/dev/null || true
+        print_info "Parallel tasks set to 1"
     else
-        print_status "$CROSS" "Failed to clone repository"
-        print_info "Hint: Make sure the repository exists and you have access"
+        print_fail "Failed to create group '${PUEUE_GROUP}'"
         return 1
     fi
 }
 
-# ============================================================================
-# Reset Function
-# ============================================================================
-do_reset() {
-    print_step "Resetting flowgate..."
+#=============================================================================
+# ディレクトリ構造作成
+#=============================================================================
 
-    # Stop and remove containers
-    docker compose down -v 2>/dev/null || true
+create_directory_structure() {
+    print_step "Creating directory structure..."
 
-    # Remove .env
-    rm -f .env
-
-    # Remove repos directory
-    rm -rf ./repos
-
-    print_status "$CHECK" "Reset complete"
-}
-
-# ============================================================================
-# Status Display
-# ============================================================================
-show_status() {
-    local repo="${1:-}"
-
-    echo ""
-
-    # Docker status
-    if check_docker_running; then
-        print_status "$CHECK" "Docker running"
+    # メインディレクトリ
+    if [[ ! -d "$FLOWGATE_DIR" ]]; then
+        mkdir -p "$FLOWGATE_DIR"
+        print_success "Created ${FLOWGATE_DIR}"
     else
-        print_status "$PENDING" "Docker running"
+        print_success "${FLOWGATE_DIR} exists"
     fi
 
-    # Container status
-    if check_container_running; then
-        print_status "$CHECK" "Container running"
+    # logs ディレクトリ
+    if [[ ! -d "$LOGS_DIR" ]]; then
+        mkdir -p "${LOGS_DIR}/tasks"
+        print_success "Created ${LOGS_DIR}"
     else
-        print_status "$PENDING" "Container running"
+        print_success "${LOGS_DIR} exists"
     fi
 
-    # GitHub auth status
-    if check_container_running && docker exec flowgate gh auth status &>/dev/null; then
-        print_status "$CHECK" "GitHub authenticated"
+    # repos ディレクトリ
+    if [[ ! -d "$REPOS_DIR" ]]; then
+        mkdir -p "$REPOS_DIR"
+        print_success "Created ${REPOS_DIR}"
     else
-        print_status "$PENDING" "GitHub authenticated"
+        print_success "${REPOS_DIR} exists"
     fi
 
-    # Claude auth status
-    if check_container_running && docker exec flowgate sh -c 'test -f ~/.claude/.credentials.json' 2>/dev/null; then
-        print_status "$CHECK" "Claude authenticated"
+    # config.toml（存在しない場合のみ作成）
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        cat > "$CONFIG_FILE" << 'EOF'
+[general]
+mode = "swarm"          # デフォルトモード: swarm | hive
+poll_interval = 60      # ポーリング間隔(秒)
+timeout = 21600         # タイムアウト(秒) = 6時間
+
+[pueue]
+parallel = 1            # 並行実行数
+group = "flowgate"      # pueueグループ名
+
+[logs]
+retention_days = 30     # ログ保持日数
+EOF
+        print_success "Created ${CONFIG_FILE}"
     else
-        print_status "$PENDING" "Claude authenticated"
+        print_success "${CONFIG_FILE} exists"
     fi
 
-    # Repository status
-    if check_container_running && docker exec flowgate test -d /repos/repo/.git 2>/dev/null; then
-        print_status "$CHECK" "Repository cloned"
+    # repos.meta（存在しない場合のみ作成）
+    if [[ ! -f "$REPOS_META" ]]; then
+        touch "$REPOS_META"
+        print_success "Created ${REPOS_META}"
     else
-        print_status "$PENDING" "Repository cloned"
+        print_success "${REPOS_META} exists"
     fi
 }
 
-# ============================================================================
-# Completion Message
-# ============================================================================
-show_completion() {
-    local repo="$1"
+#=============================================================================
+# セットアップ完了メッセージ
+#=============================================================================
 
+print_completion() {
     echo ""
     echo -e "${GREEN}${BOLD}Setup complete!${NC}"
     echo ""
-    echo -e "Add '${CYAN}flowgate${NC}' label to any issue in ${BOLD}${repo}${NC} to start."
-    echo ""
-    echo -e "${DIM}Useful commands:${NC}"
-    echo -e "  ${CYAN}docker exec flowgate flowgate status${NC}  - Check queue status"
-    echo -e "  ${CYAN}docker exec flowgate flowgate 123${NC}     - Manually trigger issue #123"
-    echo -e "  ${CYAN}docker compose logs -f${NC}                - View logs"
+    echo -e "${BOLD}Next steps:${NC}"
+    echo "  flowgate repo add owner/repo"
+    echo "  systemctl --user enable --now flowgate.timer"
     echo ""
 }
 
-# ============================================================================
-# Usage
-# ============================================================================
-show_usage() {
-    echo "Usage: $0 [OPTIONS] [owner/repo]"
-    echo ""
-    echo "Options:"
-    echo "  --reauth              Re-authenticate GitHub and Claude only"
-    echo "  --reset owner/repo    Full reset and setup"
-    echo "  --help, -h            Show this help message"
-    echo ""
-    echo "Examples:"
-    echo "  $0 takoh/myrepo       Full setup for takoh/myrepo"
-    echo "  $0 --reauth           Re-authenticate without rebuilding"
-    echo "  $0 --reset takoh/myrepo  Reset everything and setup fresh"
-    echo ""
+#=============================================================================
+# ヘルプ表示
+#=============================================================================
+
+show_help() {
+    cat << EOF
+Usage: init.sh [OPTIONS]
+
+flowgate セットアップウィザード
+
+OPTIONS:
+  --reauth    認証を再実行する
+  -h, --help  このヘルプを表示
+
+DESCRIPTION:
+  flowgateの初期セットアップを行います：
+  - 依存関係のチェック
+  - GitHub認証
+  - Claude認証確認
+  - pueuedの起動
+  - flowgateグループの作成
+  - ディレクトリ構造の作成
+
+EOF
 }
 
-# ============================================================================
-# Main Flow
-# ============================================================================
+#=============================================================================
+# メイン処理
+#=============================================================================
+
 main() {
-    local mode="full"
-    local repo=""
+    local REAUTH=false
 
-    # Parse arguments
+    # 引数解析
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --reauth)
-                mode="reauth"
+                REAUTH=true
                 shift
                 ;;
-            --reset)
-                mode="reset"
-                shift
-                if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
-                    repo="$1"
-                    shift
-                fi
-                ;;
-            --help|-h)
-                show_usage
+            -h|--help)
+                show_help
                 exit 0
                 ;;
-            -*)
-                print_error "Unknown option: $1"
-                show_usage
-                exit 1
-                ;;
             *)
-                if [ -z "$repo" ]; then
-                    repo="$1"
-                else
-                    print_error "Unexpected argument: $1"
-                    show_usage
-                    exit 1
-                fi
-                shift
+                print_error "Unknown option: $1"
+                show_help
+                exit 1
                 ;;
         esac
     done
 
-    # Validate arguments
-    case "$mode" in
-        full)
-            if [ -z "$repo" ]; then
-                print_error "Repository is required for full setup"
-                show_usage
-                exit 1
-            fi
-            validate_repo_format "$repo"
-            ;;
-        reset)
-            if [ -z "$repo" ]; then
-                print_error "Repository is required for reset"
-                show_usage
-                exit 1
-            fi
-            validate_repo_format "$repo"
-            ;;
-        reauth)
-            # repo is optional for reauth
-            if [ -n "$repo" ]; then
-                validate_repo_format "$repo"
-            fi
-            ;;
-    esac
+    export REAUTH
 
-    # Show header
+    # ヘッダー表示
     print_header
 
-    # Run pre-checks
-    run_prechecks
+    # 依存関係チェック
+    check_dependencies
 
-    # Execute based on mode
-    case "$mode" in
-        full)
-            show_status "$repo"
-            echo ""
+    # GitHub認証
+    do_github_auth
+    echo ""
 
-            generate_env "$repo"
-            build_container
-            start_container
-            auth_github
-            auth_claude
-            clone_repository "$repo"
+    # Claude認証
+    do_claude_auth
+    echo ""
 
-            show_completion "$repo"
-            ;;
+    # pueued起動
+    start_pueued
+    echo ""
 
-        reauth)
-            # Ensure container is running
-            if ! check_container_running; then
-                print_error "Container is not running. Run full setup first: ./init.sh owner/repo"
-                exit 1
-            fi
+    # pueueグループ作成
+    create_pueue_group
+    echo ""
 
-            show_status
-            echo ""
+    # ディレクトリ構造作成
+    create_directory_structure
 
-            auth_github
-            auth_claude
-
-            # Optionally clone if repo provided
-            if [ -n "$repo" ]; then
-                clone_repository "$repo"
-            fi
-
-            echo ""
-            echo -e "${GREEN}${BOLD}Re-authentication complete!${NC}"
-            echo ""
-            ;;
-
-        reset)
-            echo ""
-            echo -e "${YELLOW}${BOLD}Warning:${NC} This will remove all data and start fresh."
-            echo -n "Continue? [y/N] "
-            read -r confirm
-
-            if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-                echo "Aborted."
-                exit 0
-            fi
-
-            do_reset
-
-            # Run full setup
-            generate_env "$repo"
-            build_container
-            start_container
-            auth_github
-            auth_claude
-            clone_repository "$repo"
-
-            show_completion "$repo"
-            ;;
-    esac
+    # 完了メッセージ
+    print_completion
 }
 
-# Run main
+# スクリプト実行
 main "$@"

@@ -1,0 +1,30 @@
+version: "3.8"
+
+services:
+  flowgate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: flowgate
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Claude authentication (rw for initial auth)
+      - ${HOME}/.claude:/root/.claude
+      # GitHub CLI authentication (rw for initial auth)
+      - ${HOME}/.config/gh:/root/.config/gh
+      # Repository workspace
+      - ./repos:/repos
+      # Pueue state persistence
+      - pueue-data:/root/.local/share/pueue
+    # Keep container running - entrypoint handles services
+    stdin_open: true
+    tty: true
+    # Required for cron daemon
+    cap_add:
+      - SYS_TIME
+
+volumes:
+  pueue-data:
+    name: flowgate-pueue-data

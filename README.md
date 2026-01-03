@@ -63,7 +63,7 @@ flowgateは、GitHub Issueにラベルを付けるだけで、[claude-flow](http
 
 ### 必須依存関係
 
-flowgate を使用する前に、以下の依存関係を事前にインストールしてください：
+flowgate を使用する前に、以下の依存関係をインストールしてください：
 
 #### 基本ツール
 - **git** - バージョン管理
@@ -77,49 +77,72 @@ npm install -g @anthropic-ai/claude-flow@alpha
 npm install -g @anthropic-ai/claude-code
 ```
 
-### 依存関係の確認
+### インストール
 
-すべての依存関係が揃っているか確認：
+ワンコマンドでセットアップ完了：
 
 ```bash
 git clone https://github.com/takoh/flowgate && cd flowgate
-./check-deps.sh
+./install.sh
 ```
 
-依存関係が不足している場合、`check-deps.sh` がインストール方法を表示します。
-
-### 初期設定
-
-```bash
-./init.sh
-```
-
-初期設定ウィザードが起動します：
+インストーラーは以下を自動実行します：
 
 ```
-flowgate setup
-==============
-[✓] Dependencies installed
-[ ] GitHub authenticated
-[ ] Claude authenticated
+flowgate installer
+==================
 
-→ Starting GitHub auth...
-  Open: https://github.com/login/device
-  Enter code: XXXX-XXXX
-  Waiting... [✓]
+1. 依存関係のチェック
+---------------------
+  [✓] git 2.x
+  [✓] Node.js v20.x
+  [✓] gh CLI 2.x
+  [✓] pueue 3.x
+  [✓] claude-flow
+  [✓] claude-code
 
-→ Starting Claude auth...
-  Open: https://claude.ai/oauth/...
-  Waiting... [✓]
+2. 認証
+-------
+→ GitHub authentication...
+  [✓] Already authenticated
 
+→ Claude authentication...
+  [✓] Claude authenticated
+
+3. pueue セットアップ
+---------------------
 → Starting pueued...
-  [✓] pueued running
+  [✓] pueued started
 
-→ Creating flowgate group in pueue...
+→ Creating pueue group 'flowgate'...
   [✓] Group 'flowgate' created
 
-Setup complete!
+4. ディレクトリ構造の作成
+-------------------------
+  [✓] Created ~/.flowgate
+  [✓] Created ~/.flowgate/logs
+  [✓] Created config.toml
+
+5. スクリプトのインストール
+---------------------------
+  [✓] Installed flowgate
+  [✓] Installed flowgate-watcher
+
+6. systemd サービスのインストール
+---------------------------------
+  [✓] Installed flowgate.service
+  [✓] Installed flowgate.timer
+  [✓] systemd daemon reloaded
+
+Enable and start flowgate.timer now? [y/N]: y
+  [✓] flowgate.timer enabled and started
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Installation complete!
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
+
+> **Note**: 依存関係が不足している場合、インストーラーがOS別のインストール方法を表示します
 
 ### リポジトリ追加
 
@@ -137,18 +160,7 @@ Adding repository: owner/my-project
 Ready! Add 'flowgate' label to any issue in owner/my-project.
 ```
 
-### 起動
-
-systemd timerで常駐させます：
-
-```bash
-# 有効化と起動
-systemctl --user enable --now flowgate.timer
-
-# 状態確認
-systemctl --user status flowgate.timer
-systemctl --user list-timers
-```
+これで完了です！GitHub Issueに`flowgate`ラベルを付けると、1分以内に自動実行されます。
 
 ## 使い方
 
@@ -338,7 +350,7 @@ PR: #456
 
 **解決方法**:
 ```bash
-./init.sh --reauth
+./install.sh --reauth
 ```
 
 ### pueuedが起動していない
@@ -360,7 +372,14 @@ pueued -d  # デーモンとして起動
 2. systemd timerが動作しているか確認
    ```bash
    systemctl --user status flowgate.timer
+   systemctl --user list-timers
    ```
+
+   もし停止している場合は有効化:
+   ```bash
+   systemctl --user enable --now flowgate.timer
+   ```
+
 3. ラベルが正しく付いているか確認（`flowgate`, `flowgate:swarm`, `flowgate:hive`）
 
 ### ログの確認方法

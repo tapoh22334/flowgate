@@ -234,17 +234,30 @@ flowgate:hive   ─┘                        ├─▶ flowgate:failed
 ### ~/.flowgate/config.toml
 
 ```toml
-[general]
-mode = "swarm"          # デフォルトモード: swarm | hive
-poll_interval = 60      # ポーリング間隔(秒)
-timeout = 21600         # タイムアウト(秒) = 6時間
-
-[pueue]
-parallel = 1            # 並行実行数
+# flowgate configuration
+mode = "swarm"          # デフォルト実行モード: swarm | hive
 group = "flowgate"      # pueueグループ名
+```
 
-[logs]
-retention_days = 30     # ログ保持日数
+### ポーリング間隔の変更
+
+ポーリング間隔はsystemd timerで管理されています。デフォルトは1分間隔です。
+
+変更するには、timerファイルを直接編集してください：
+
+```bash
+# timerファイルを編集
+vim ~/.config/systemd/user/flowgate.timer
+
+# OnUnitActiveSecの値を変更（例: 5分間隔にする場合）
+# OnUnitActiveSec=1min → OnUnitActiveSec=5min
+
+# 変更を反映
+systemctl --user daemon-reload
+systemctl --user restart flowgate.timer
+
+# 確認
+systemctl --user list-timers
 ```
 
 ### ~/.flowgate/repos.meta
@@ -299,7 +312,6 @@ flowgate/                         # インストール先
     └── another-project-45.log
 ```
 
-ログは30日間保持され、古いものは自動削除されます。
 
 ### ログ確認
 

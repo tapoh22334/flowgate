@@ -67,10 +67,7 @@ flowgate/                         # $FLOWGATE_HOME
 │   ├── flowgate-watcher.sh       # 監視スクリプト
 │   └── lib/
 │       ├── common.sh             # 共通関数
-│       ├── config.sh             # 設定読み込み
-│       ├── github.sh             # GitHub操作
-│       ├── pueue.sh              # pueue操作
-│       └── log.sh                # ログ関数
+│       └── logging.sh            # ログ関数
 ├── systemd/
 │   ├── flowgate.service
 │   └── flowgate.timer
@@ -248,51 +245,24 @@ require_command <command>        # コマンド存在確認
 ensure_dir <path>               # ディレクトリ作成
 ```
 
-#### lib/config.sh
+#### lib/logging.sh
 
 ```bash
-# 設定読み込み
-config_load                      # config.tomlを読み込み
-config_get <section> <key>       # 値取得
-config_get_or_default <section> <key> <default>
+# ログ出力
+log_msg <level> <message> [logfile]           # ログ出力
+log_task <repo> <issue> <level> <message>     # タスク固有ログ
+log_watcher <level> <message>                 # watcher用ログ
 
-# 定数
-FLOWGATE_DATA="${FLOWGATE_DATA:-$HOME/.flowgate}"
-CONFIG_FILE="$FLOWGATE_DATA/config.toml"
-```
+# GitHub Issue コメント
+post_task_start <repo> <issue> <mode>         # 開始コメント
+post_task_success <repo> <issue> [pr_number]  # 成功コメント
+post_task_failure <repo> <issue> [error_msg]  # 失敗コメント
+post_task_timeout <repo> <issue> [hours]      # タイムアウトコメント
 
-#### lib/github.sh
-
-```bash
-# Issue操作
-gh_issue_get_body <repo> <issue>              # Issue本文取得
-gh_issue_add_comment <repo> <issue> <body>    # コメント追加
-gh_issue_add_label <repo> <issue> <label>     # ラベル追加
-gh_issue_remove_label <repo> <issue> <label>  # ラベル削除
-
-# リポジトリ操作
-gh_repo_clone <repo> <dest>                   # クローン
-```
-
-#### lib/pueue.sh
-
-```bash
-# タスク操作
-pueue_add_task <group> <command> <label>      # タスク追加
-pueue_get_status <group>                      # グループ状態取得
-pueue_ensure_group <group>                    # グループ作成確認
-
-# 定数
-PUEUE_GROUP="flowgate"
-```
-
-#### lib/log.sh
-
-```bash
-# タスクログ
-task_log_path <owner> <repo> <issue>          # ログパス生成
-task_log_write <path> <message>               # ログ書き込み
-task_log_cleanup <days>                       # 古いログ削除
+# ラベル管理
+set_processing_label <repo> <issue> <label>   # processingラベル設定
+set_failed_label <repo> <issue>               # failedラベル設定
+remove_processing_label <repo> <issue>        # processingラベル削除
 ```
 
 ---
@@ -303,35 +273,21 @@ task_log_cleanup <days>                       # 古いログ削除
 
 ```toml
 # ~/.flowgate/config.toml
+# flowgate configuration
 
-[general]
 # デフォルト実行モード: "swarm" | "hive"
 mode = "swarm"
 
-# ポーリング間隔（秒）- systemd timerで制御するため参考値
-poll_interval = 60
-
-# タスクタイムアウト（秒）
-timeout = 21600  # 6時間
-
-[pueue]
-# 並行実行数
-parallel = 1
-
 # pueueグループ名
 group = "flowgate"
-
-[logs]
-# ログ保持日数
-retention_days = 30
-
-# ログレベル: "debug" | "info" | "warn" | "error"
-level = "info"
-
-[github]
-# Issueコメントの有効/無効
-comments_enabled = true
 ```
+
+**その他の設定:**
+
+- **ポーリング間隔**: systemd timerで管理（デフォルト: 1分）
+  - 変更するには `~/.config/systemd/user/flowgate.timer` を直接編集
+- **並行実行数**: pueueの設定で管理
+  - `pueue parallel <num> -g flowgate` で変更可能
 
 ### 6.2 repos.meta
 
@@ -367,17 +323,7 @@ owner/repo-b#45:1704326460
 | **ログ** | `log_info` | 情報ログ出力 |
 | | `log_warn` | 警告ログ出力 |
 | | `log_error` | エラーログ出力 |
-| | `log_debug` | デバッグログ出力 |
-| **設定** | `config_load` | TOML設定読み込み |
-| | `config_get` | 設定値取得 |
-| **GitHub** | `gh_issue_get_body` | Issue本文取得 |
-| | `gh_issue_add_comment` | コメント追加 |
-| | `gh_issue_add_label` | ラベル追加 |
-| | `gh_issue_remove_label` | ラベル削除 |
-| | `gh_repo_clone` | リポジトリクローン |
-| **pueue** | `pueue_add_task` | タスク追加 |
-| | `pueue_get_status` | 状態取得 |
-| | `pueue_ensure_group` | グループ確保 |
+| **設定** | config.tomlから直接grep | 設定値取得 |
 | **ユーティリティ** | `die` | エラー終了 |
 | | `require_command` | コマンド確認 |
 | | `ensure_dir` | ディレクトリ確保 |
@@ -468,14 +414,14 @@ readonly EXIT_CLAUDE_ERROR=7
 │        ▼                                         ▼              │
 │  ┌─────────────────────────────────────────────────────────────┐│
 │  │                     scripts/lib/                            ││
-│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐       ││
-│  │  │common.sh │ │config.sh │ │github.sh │ │pueue.sh  │       ││
-│  │  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘       ││
-│  │       │            │            │            │              ││
-│  │       └────────────┴─────┬──────┴────────────┘              ││
-│  │                          │                                  ││
-│  └──────────────────────────┼──────────────────────────────────┘│
-│                             │ source                            │
+│  │  ┌────────────┐ ┌────────────┐                              ││
+│  │  │ common.sh  │ │ logging.sh │                              ││
+│  │  └──────┬─────┘ └─────┬──────┘                              ││
+│  │         │             │                                     ││
+│  │         └──────┬──────┘                                     ││
+│  │                │                                            ││
+│  └────────────────┼────────────────────────────────────────────┘│
+│                   │ source                                      │
 │                             ▼                                   │
 │  ┌─────────────────────────────────────────────────────────────┐│
 │  │                     scripts/                                ││

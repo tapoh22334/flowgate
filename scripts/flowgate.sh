@@ -52,6 +52,14 @@ die() {
     exit 1
 }
 
+confirm() {
+    local prompt="$1"
+    local response
+    echo -en "${YELLOW}${prompt} [y/N]:${NC} "
+    read -r response
+    [[ "$response" =~ ^[Yy]$ ]]
+}
+
 # -----------------------------------------------------------------------------
 # Config Functions
 # -----------------------------------------------------------------------------
@@ -181,6 +189,24 @@ repo_add() {
     local repo_path="${REPOS_DIR}/${owner}/${name}"
 
     info "Adding repository: ${CYAN}${repo}${NC}"
+
+    # Check if repository is public
+    local is_private
+    is_private=$(gh repo view "$repo" --json isPrivate -q .isPrivate 2>/dev/null || echo "unknown")
+
+    if [[ "$is_private" == "false" ]]; then
+        echo ""
+        warn "This is a ${BOLD}PUBLIC${NC}${YELLOW} repository!${NC}"
+        warn "Security: Only issues created by the repository OWNER will be processed."
+        warn "Other users' issues will be ignored for security reasons."
+        echo ""
+        if ! confirm "Continue adding this public repository?"; then
+            die "Aborted."
+        fi
+        echo ""
+    elif [[ "$is_private" == "unknown" ]]; then
+        warn "Could not determine repository visibility. Proceeding anyway."
+    fi
 
     # Check if already exists
     if grep -qxF "$repo" "$REPOS_META" 2>/dev/null; then

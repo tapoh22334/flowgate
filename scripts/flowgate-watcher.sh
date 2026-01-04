@@ -90,6 +90,30 @@ is_processing() {
     fi
 }
 
+# Issue作成者がリポジトリオーナーかチェック（セキュリティ対策）
+is_owner() {
+    local repo="$1"
+    local issue_number="$2"
+
+    # リポジトリオーナーを取得
+    local repo_owner="${repo%/*}"
+
+    # Issue作成者を取得
+    local issue_author
+    issue_author=$(gh issue view "$issue_number" --repo "$repo" --json author -q '.author.login' 2>/dev/null || echo "")
+
+    if [[ -z "$issue_author" ]]; then
+        log_error "    Could not determine issue author"
+        return 1
+    fi
+
+    if [[ "$issue_author" == "$repo_owner" ]]; then
+        return 0  # オーナー
+    else
+        return 1  # オーナーでない
+    fi
+}
+
 # ============================================================
 # 初期化
 # ============================================================
@@ -142,6 +166,12 @@ process_issues() {
             # 重複実行防止: 既にprocessing中ならスキップ
             if is_processing "$repo" "$issue_number"; then
                 log_warn "    Issue #${issue_number} is already processing. Skipping."
+                continue
+            fi
+
+            # セキュリティチェック: オーナーのみ許可
+            if ! is_owner "$repo" "$issue_number"; then
+                log_warn "    Issue #${issue_number} was not created by repository owner. Skipping for security."
                 continue
             fi
 

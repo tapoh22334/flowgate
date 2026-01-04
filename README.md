@@ -19,6 +19,38 @@ flowgateは、GitHub Issueにラベルを付けるだけで、[claude-flow](http
 - **自動PR作成**: タスク完了後に自動でPull Requestを作成
 - **オブザーバビリティ**: Issueコメントとログによる進捗追跡
 
+## セキュリティ
+
+> **重要**: flowgate は Issue の内容を自動実行するため、セキュリティに十分注意してください。
+
+### OWNER限定実行
+
+flowgate は **リポジトリオーナーが作成した Issue のみ** を処理します。
+
+- Public リポジトリでは誰でも Issue を作成できますが、オーナー以外の Issue は無視されます
+- これにより、悪意のあるユーザーによる任意コード実行を防止します
+- GitHub の認証システムにより、Issue 作成者の偽装は不可能です
+
+### Public リポジトリの警告
+
+```bash
+$ flowgate repo add owner/public-repo
+[INFO] Adding repository: owner/public-repo
+
+[WARN] This is a PUBLIC repository!
+[WARN] Security: Only issues created by the repository OWNER will be processed.
+[WARN] Other users' issues will be ignored for security reasons.
+
+Continue adding this public repository? [y/N]:
+```
+
+### 推奨事項
+
+| 環境 | 推奨度 | 備考 |
+|------|--------|------|
+| Private リポジトリ | ✅ 推奨 | コラボレーターのみ Issue 作成可能 |
+| Public リポジトリ | ⚠️ 注意 | OWNER の Issue のみ実行される |
+
 ## アーキテクチャ
 
 ```

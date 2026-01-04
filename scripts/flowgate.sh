@@ -350,9 +350,9 @@ queue_issue() {
 
     success "Fetched issue: ${issue_title}"
 
-    # Build task
-    local task
-    task=$(cat << TASK_EOF
+    # Build task content and write to file (safer than command line embedding)
+    local task_file="${TASKS_LOG_DIR}/${owner}-${name}-${issue_number}.task"
+    cat > "$task_file" << TASK_EOF
 # ${issue_title}
 
 ${issue_body}
@@ -362,7 +362,6 @@ ${issue_body}
 - ブランチ: ${branch}
 - Issue: #${issue_number}
 TASK_EOF
-)
 
     # Build claude-flow command
     local claude_cmd
@@ -372,7 +371,7 @@ TASK_EOF
         claude_cmd="npx claude-flow@alpha swarm"
     fi
 
-    # Build pueue command
+    # Build pueue command (task content read from file to prevent injection)
     local pueue_cmd
     pueue_cmd=$(cat << CMD_EOF
 cd "${repo_path}" && \\
@@ -381,7 +380,7 @@ git checkout main && \\
 git pull origin main && \\
 git worktree add -b "${branch}" ".worktrees/${branch}" && \\
 cd ".worktrees/${branch}" && \\
-${claude_cmd} '${task//\'/\'\\\'\'}' --claude 2>&1 | tee "${log_file}"
+${claude_cmd} "\$(cat '${task_file}')" --claude 2>&1 | tee "${log_file}"
 CMD_EOF
 )
 

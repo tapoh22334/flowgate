@@ -1,5 +1,18 @@
 # flowgate - GitHub Issue to claude-flow task execution
 # Base: Ubuntu 24.04
+#
+# PREREQUISITES: This image requires the following tools to be pre-installed
+# on the base image or mounted at runtime:
+# - Node.js 20+
+# - npm
+# - git
+# - gh (GitHub CLI)
+# - pueue/pueued
+# - claude-code (@anthropic-ai/claude-code)
+# - claude-flow
+#
+# For security reasons, this Dockerfile does NOT install dependencies.
+# Users are responsible for ensuring all prerequisites are available.
 
 FROM ubuntu:24.04
 
@@ -9,86 +22,6 @@ LABEL description="Bridge GitHub Issues to claude-flow task execution via pueue"
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
-
-# ============================================
-# System Dependencies
-# ============================================
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Essential tools
-    ca-certificates \
-    curl \
-    wget \
-    gnupg \
-    # Git
-    git \
-    # Build tools (for native npm modules)
-    build-essential \
-    python3 \
-    # Process management
-    cron \
-    # Utilities
-    jq \
-    unzip \
-    && rm -rf /var/lib/apt/lists/*
-
-# ============================================
-# Node.js 20 (via NodeSource)
-# ============================================
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
-    && rm -rf /var/lib/apt/lists/* \
-    && npm install -g npm@latest
-
-# Verify Node.js installation
-RUN node --version && npm --version
-
-# ============================================
-# GitHub CLI (gh)
-# ============================================
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-    | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
-    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-    | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
-    && apt-get update \
-    && apt-get install -y gh \
-    && rm -rf /var/lib/apt/lists/*
-
-# Verify gh installation
-RUN gh --version
-
-# ============================================
-# pueue (Task Queue Manager)
-# Install from GitHub releases (latest stable)
-# ============================================
-ARG PUEUE_VERSION=3.4.1
-RUN ARCH=$(dpkg --print-architecture) \
-    && case "${ARCH}" in \
-        amd64) PUEUE_ARCH="x86_64-unknown-linux-musl" ;; \
-        arm64) PUEUE_ARCH="aarch64-unknown-linux-musl" ;; \
-        *) echo "Unsupported architecture: ${ARCH}" && exit 1 ;; \
-    esac \
-    && curl -fsSL "https://github.com/Nukesor/pueue/releases/download/v${PUEUE_VERSION}/pueue-linux-${PUEUE_ARCH}" \
-       -o /usr/local/bin/pueue \
-    && curl -fsSL "https://github.com/Nukesor/pueue/releases/download/v${PUEUE_VERSION}/pueued-linux-${PUEUE_ARCH}" \
-       -o /usr/local/bin/pueued \
-    && chmod +x /usr/local/bin/pueue /usr/local/bin/pueued
-
-# Verify pueue installation
-RUN pueue --version && pueued --version
-
-# ============================================
-# NPM Global Packages
-# - claude-flow: Orchestration framework
-# - @anthropic-ai/claude-code: Claude Code CLI
-# ============================================
-RUN npm install -g \
-    @anthropic-ai/claude-code \
-    claude-flow
-
-# Verify installations
-RUN claude --version || echo "claude-code installed" \
-    && claude-flow --version || echo "claude-flow installed"
 
 # ============================================
 # Directory Structure
@@ -132,6 +65,10 @@ RUN chmod +x /usr/local/bin/flowgate /usr/local/bin/flowgate-watcher
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
+
+# Health check for container monitoring
+HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
+    CMD pueue status >/dev/null 2>&1 && pgrep cron >/dev/null || exit 1
 
 # Default command (can be overridden)
 CMD ["bash"]

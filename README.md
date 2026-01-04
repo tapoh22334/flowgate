@@ -111,21 +111,24 @@ npm install -g @anthropic-ai/claude-code
 
 ### インストール
 
-ワンコマンドでセットアップ完了：
-
 ```bash
 git clone https://github.com/takoh/flowgate && cd flowgate
 ./install.sh
 ```
 
-インストーラーは以下を自動実行します：
+> **重要**: セキュリティ上の理由から、`install.sh` は依存関係のインストールを行いません。事前に上記の依存関係をすべてインストールしてください。
+
+`install.sh` は依存関係のチェックのみを行います：
 
 ```
-flowgate installer
-==================
+flowgate 依存関係チェッカー
+==============================
 
-1. 依存関係のチェック
----------------------
+注意: このスクリプトは依存関係のチェックのみを行います。
+      インストールは行いません（セキュリティ上の理由）。
+
+依存関係のチェック
+------------------
   [✓] git 2.x
   [✓] Node.js v20.x
   [✓] gh CLI 2.x
@@ -133,48 +136,16 @@ flowgate installer
   [✓] claude-flow
   [✓] claude-code
 
-2. 認証
--------
-→ GitHub authentication...
-  [✓] Already authenticated
+依存関係チェック結果
+--------------------
+  [✓] すべての依存関係が利用可能です
 
-→ Claude authentication...
-  [✓] Claude authenticated
-
-3. pueue セットアップ
----------------------
-→ Starting pueued...
-  [✓] pueued started
-
-→ Creating pueue group 'flowgate'...
-  [✓] Group 'flowgate' created
-
-4. ディレクトリ構造の作成
--------------------------
-  [✓] Created ~/.flowgate
-  [✓] Created ~/.flowgate/logs
-  [✓] Created config.toml
-
-5. スクリプトのインストール
----------------------------
-  [✓] Installed flowgate
-  [✓] Installed flowgate-watcher
-
-6. systemd サービスのインストール
----------------------------------
-  [✓] Installed flowgate.service
-  [✓] Installed flowgate.timer
-  [✓] systemd daemon reloaded
-
-Enable and start flowgate.timer now? [y/N]: y
-  [✓] flowgate.timer enabled and started
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Installation complete!
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+次のステップ:
+  gh auth login    # GitHub認証（未認証の場合）
+  ./init.sh        # 初期設定
 ```
 
-> **Note**: 依存関係が不足している場合、インストーラーがOS別のインストール方法を表示します
+依存関係が不足している場合、OS別のインストール手順が表示されます
 
 ### リポジトリ追加
 

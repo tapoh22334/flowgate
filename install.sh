@@ -545,17 +545,9 @@ create_directory_structure() {
     # config.toml（存在しない場合のみ作成）
     if [[ ! -f "$CONFIG_FILE" ]]; then
         cat > "$CONFIG_FILE" << 'EOF'
-[general]
-mode = "swarm"          # デフォルトモード: swarm | hive
-poll_interval = 60      # ポーリング間隔(秒)
-timeout = 21600         # タイムアウト(秒) = 6時間
-
-[pueue]
-parallel = 1            # 並行実行数
+# flowgate configuration
+mode = "swarm"          # デフォルト実行モード: swarm | hive
 group = "flowgate"      # pueueグループ名
-
-[logs]
-retention_days = 30     # ログ保持日数
 EOF
         print_success "Created ${CONFIG_FILE}"
     else
